@@ -352,6 +352,14 @@ details.card.fold[open]>summary .chev{transform:rotate(90deg)}
 details.card.fold[open]>summary:hover{background:transparent}
 .fold-b{padding:15px}
 .fold-b>*:first-child{margin-top:0}
+/* 分组内的「高级」二级折叠：默认收起，避免把常用设置淹掉 */
+details.subadv{margin-top:13px;border-top:1px dashed var(--border);padding-top:11px}
+details.subadv>summary{list-style:none;cursor:pointer;font-size:11.5px;font-weight:700;
+  color:var(--brand);display:flex;align-items:center;gap:6px}
+details.subadv>summary::-webkit-details-marker{display:none}
+details.subadv>summary::after{content:"›";font-size:14px;transition:transform .2s;color:var(--muted)}
+details.subadv[open]>summary::after{transform:rotate(90deg)}
+details.subadv[open]>summary{margin-bottom:11px}
 /* 顶部只读概览：四个数字一行，紧凑 */
 .statline{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;text-align:center}
 .statline>div{background:var(--surface-2);border-radius:10px;padding:8px 4px}
@@ -401,11 +409,10 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
 .item-edit .medit{margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)}
 .item-edit .medit input{padding:7px 9px;font-size:12.5px;font-weight:700}
 .item-edit .medit .fl{margin-bottom:3px}
-/* 可点的 g/ml 单位标签：液体类食物用 ml 更符合直觉 */
-.item-edit .g .unit{min-width:40px;height:34px;padding:0 9px;border-radius:10px;flex:0 0 auto;
-  background:var(--surface-3);font-size:11.5px;font-weight:800;color:var(--text-2);
-  cursor:pointer;letter-spacing:.02em;transition:transform .12s,background .15s}
-.item-edit .g .unit:active{transform:scale(.93);background:var(--brand-soft);color:var(--brand)}
+/* 单位标签：自动判定、不可点。做成纯文字，避免让人以为需要自己管 */
+.item-edit .g .unitlbl{flex:0 0 auto;min-width:20px;font-size:12px;font-weight:750;
+  color:var(--muted);letter-spacing:.02em}
+
 .item-edit .g{display:flex;align-items:center;gap:7px;margin-bottom:9px}
 .item-edit .g input{width:80px;text-align:center;padding:8px;font-weight:750;font-variant-numeric:tabular-nums}
 .item-edit .g .st{width:34px;height:34px;border-radius:10px;background:var(--surface-3);display:grid;place-items:center;
@@ -540,8 +547,6 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
     <div class="sheet-h"><h3>自定义食物</h3><button class="icon-btn" data-close>✕</button></div>
     <div class="sheet-b">
       <div style="margin-bottom:12px"><label class="fl">名称</label><input id="cfName" placeholder="例如：妈妈做的红烧排骨" /></div>
-      <div style="margin-bottom:12px"><label class="fl">计量单位</label>
-        <select id="cfUnit"><option value="g">g（固体）</option><option value="ml">ml（液体，如豆浆/汤）</option></select></div>
       <div class="grid2" style="margin-bottom:12px">
         <div><label class="fl">热量 kcal/100g</label><input id="cfKcal" type="number" inputmode="decimal" placeholder="0" /></div>
         <div><label class="fl">蛋白质 g/100g</label><input id="cfP" type="number" inputmode="decimal" placeholder="0" /></div>
@@ -1023,10 +1028,10 @@ const FOODS = [
 ["芝麻酱","cond",630,19.2,22.7,52.7,40,5.9],
 ["千岛酱","cond",480,1.0,15.0,46.0,700,0]
 ];
-/* 液体类食物用 ml 计量（豆浆/牛奶/汤/饮品/油/酱油醋）。
-   水基液体 1ml ≈ 1g，营养表按每 100g 给的值与每 100ml 基本一致，
-   所以内部换算逻辑完全不变，只是显示与输入的标签换成 ml。
-   不列酸奶、黄油：那是用勺吃的，按 g 更自然。 */
+/* 液体类食物用 ml 显示（豆浆/牛奶/汤/饮品/油/酱油醋）。
+   水基液体 1ml ≈ 1g，所以营养换算完全不变，只是标签更符合直觉：
+   牛奶盒上写的是 250ml，不该让你读成 250g。
+   单位由食物本身决定，界面上不可点、不用你管。 */
 const LIQUID_NAMES = new Set([
   "豆浆(无糖)","豆浆(加糖)","豆浆(便利)","牛奶(全脂)","牛奶(脱脂)","低脂牛奶",
   "橄榄油","花生油","菜籽油",
@@ -1036,12 +1041,14 @@ const LIQUID_NAMES = new Set([
   "啤酒","白酒(52度)","红酒","运动饮料","电解质水(零卡)","椰子水",
   "生抽","老抽","蚝油","醋"
 ]);
-/* 建立索引：名称 -> 营养对象（每100g / 每100ml） */
+/* 建立索引：名称 -> 营养对象（每100g；液体按每100ml） */
 const FOOD_IX = {};
 for (const f of FOODS) {
   FOOD_IX[f[0]] = { name:f[0], cat:f[1], kcal:f[2], p:f[3], c:f[4], f:f[5], na:f[6], fib:f[7]||0,
                     per:100, u: LIQUID_NAMES.has(f[0]) ? "ml" : "g" };
 }
+/** 条目该用什么单位：库里有就按库里的，没匹配到就看 AI 判断，默认 g */
+function unitOf(it){ return (it && it.u) === "ml" ? "ml" : "g"; }
 /* 自定义食物（用户添加）会合并进 FOOD_IX 运行时索引 */
 
 /* ============================ B. 常量与配置 ============================ */
@@ -1074,7 +1081,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v2.3";
+const APP_VER = "v2.5";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -1689,7 +1696,7 @@ function nutri(food, grams){
 /* --- 拍照识别一餐 --- */
 const PROMPT_MEAL = `你是专业营养师。识别这张餐食照片里的所有食物，估算重量与营养。
 只输出 JSON，不要任何解释文字，格式如下：
-{"items":[{"name":"白米饭","grams":180,"unit":"g","cooking":"蒸","portion":"约一平碗","kcal":209,"protein":4.7,"carbs":46.6,"fat":0.5,"sodium":5,"fiber":0.5,"confidence":0.8}],"note":""}
+{"items":[{"name":"白米饭","grams":180,"cooking":"蒸","portion":"约一平碗","kcal":209,"protein":4.7,"carbs":46.6,"fat":0.5,"sodium":5,"fiber":0.5,"confidence":0.8}],"note":""}
 
 【重量估算——这是本次任务最重要的一项】
 用户看不到自己吃了多少克，只能靠你估。必须真的按画面估算，禁止偷懒填 100。
@@ -1707,7 +1714,7 @@ const PROMPT_MEAL = `你是专业营养师。识别这张餐食照片里的所�
 2. 营养值按 grams 的**总量**计算，不是每 100g。
 3. 单位：kcal 千卡；protein/carbs/fat/fiber 克；sodium 毫克。
 4. 中式炒菜的烹调用油和盐常被严重低估，请按实际用油量计入脂肪与钠。
-5. unit：液体（豆浆、牛奶、汤、饮料、酒、油、酱油醋）写 "ml"，其余写 "g"。
+5. unit 字段：液体（豆浆、牛奶、汤、饮料、酒、油、酱油醋）写 "ml"，其余写 "g"。
 6. confidence 要诚实：画面清晰、份量有把握给 0.8-0.95；被遮挡或看不出份量给 0.4-0.6。
    把握不大时在 name 后加"（估）"。
 7. 如果照片里没有食物，返回 {"items":[],"note":"未识别到食物"}。`;
@@ -1806,7 +1813,7 @@ function parseTextMealLocal(text){
     let m = chunk.match(/^(.+?)[\s]*([\d.]+)\s*(kg|公斤|斤|克|g|毫升|ml|升|l|L)$/);
     if (m){
       name = m[1]; grams = num(m[2]) * (UNIT_G[m[3]] || 1);
-      u = /毫升|ml|升|l|L/.test(m[3]) ? "ml" : "g";     // 写明毫升/升的按 ml 记
+      u = /毫升|ml|升|l|L/.test(m[3]) ? "ml" : "g";    // 写明毫升/升的就按 ml 显示
     }
     if (grams == null){
       m = chunk.match(/^(.+?)[\s]*([\d.]+)\s*(个|只|颗|枚|根|片|块|碗|杯|份|勺|盒|瓶|罐|袋)$/);
@@ -2549,20 +2556,38 @@ function renderSettings(){
     false);
 
   // 宏量
+  const bw = currentWeight();
   h += foldCard('macro', '🎯', '宏量目标',
     tg.kcal + ' kcal · 蛋白' + tg.protein + ' 碳水' + tg.carbs + ' 脂肪' + tg.fat,
-    '<div class="grid3" style="margin-bottom:11px">' +
-      '<div><label class="fl">蛋白 g/kg</label><input type="number" step="0.1" data-set="proteinPerKg" value="' + S.settings.proteinPerKg + '"></div>' +
-      '<div><label class="fl">脂肪 g/kg</label><input type="number" step="0.1" data-set="fatPerKg" value="' + S.settings.fatPerKg + '"></div>' +
-      '<div><label class="fl">钠 mg</label><input type="number" step="50" data-set="sodiumTarget" value="' + S.settings.sodiumTarget + '"></div></div>' +
-    '<div class="grid2" style="margin-bottom:11px">' +
-      '<div><label class="fl">纤维 g</label><input type="number" step="1" data-set="fiberTarget" value="' + S.settings.fiberTarget + '"></div>' +
-      '<div><label class="fl">手填 TDEE（留空=自动）</label><input type="number" step="10" data-set="manualTDEE" value="' + (S.settings.manualTDEE || "") + '" placeholder="自动"></div></div>' +
-    '<div class="chips">' +
-      '<span class="chip" style="color:' + C.protein + '">蛋白 ' + tg.protein + 'g</span>' +
-      '<span class="chip" style="color:' + C.carbs + '">碳水 ' + tg.carbs + 'g</span>' +
-      '<span class="chip" style="color:' + C.fat + '">脂肪 ' + tg.fat + 'g</span>' +
-      '<span class="chip" style="color:' + C.sodium + '">钠 ' + tg.sodium + 'mg</span></div>',
+    // 这四个是算出来的结果，只读展示 —— 不提供手填，避免和自动计算打架
+    '<div class="statline">' +
+      '<div><div class="l">蛋白</div><div class="v" style="color:' + C.protein + '">' + tg.protein + '<small>g</small></div></div>' +
+      '<div><div class="l">碳水</div><div class="v" style="color:' + C.carbs + '">' + tg.carbs + '<small>g</small></div></div>' +
+      '<div><div class="l">脂肪</div><div class="v" style="color:' + C.fat + '">' + tg.fat + '<small>g</small></div></div>' +
+      '<div><div class="l">钠</div><div class="v" style="color:' + C.sodium + '">' + tg.sodium + '</div></div>' +
+    '</div>' +
+    '<div class="xs muted" style="margin-top:10px;line-height:1.75">' +
+      '<b style="color:var(--text)">全部自动算出，不需要填。</b><br>' +
+      '热量 = TDEE ' + t.value + ' − 缺口 ' + tg.deficit + ' = <b>' + tg.kcal + ' kcal</b><br>' +
+      '蛋白 = ' + S.settings.proteinPerKg + ' g/kg × ' + fw(bw) + 'kg = ' + tg.protein + 'g　' +
+      '脂肪 = ' + S.settings.fatPerKg + ' g/kg × ' + fw(bw) + 'kg = ' + tg.fat + 'g<br>' +
+      '碳水 = 剩余热量 ÷ 4 = ' + tg.carbs + 'g　·　纤维目标 ' + tg.fiber + 'g<br>' +
+      '体重变了它们会跟着变，不用你管。' +
+    '</div>' +
+    '<details class="subadv"><summary>高级：调整计算规则</summary>' +
+      '<div class="xs muted" style="margin-bottom:10px;line-height:1.7">' +
+      '默认值是按减脂期保肌肉定的（蛋白 2.0 / 脂肪 0.7 g/kg）。' +
+      '<b>只有教练或医生给了不同建议时才需要改。</b>' +
+      '脂肪不建议低于 0.6，否则影响激素。</div>' +
+      '<div class="grid3" style="margin-bottom:11px">' +
+        '<div><label class="fl">蛋白 g/kg</label><input type="number" step="0.1" min="1.2" max="3" data-set="proteinPerKg" value="' + S.settings.proteinPerKg + '"></div>' +
+        '<div><label class="fl">脂肪 g/kg</label><input type="number" step="0.1" min="0.5" max="1.5" data-set="fatPerKg" value="' + S.settings.fatPerKg + '"></div>' +
+        '<div><label class="fl">钠 mg</label><input type="number" step="50" min="1000" max="3500" data-set="sodiumTarget" value="' + S.settings.sodiumTarget + '"></div></div>' +
+      '<div class="grid2">' +
+        '<div><label class="fl">纤维 g</label><input type="number" step="1" min="10" max="50" data-set="fiberTarget" value="' + S.settings.fiberTarget + '"></div>' +
+        '<div><label class="fl">手填 TDEE（留空=自动）</label><input type="number" step="10" min="800" max="6000" data-set="manualTDEE" value="' + (S.settings.manualTDEE || "") + '" placeholder="自动"></div></div>' +
+      '<div class="xs muted" style="margin-top:9px">钠控制得稳，你的体重读数才可信 —— 钠超标会让次日晨重虚高。</div>' +
+    '</details>',
     false);
 
   // AI
@@ -2674,8 +2699,6 @@ function itemFromFood(food, grams){
                ref:{ kcal:food.kcal, p:food.p, c:food.c, f:food.f, na:food.na, fib:food.fib } };
   return applyGrams(it, grams || 100);
 }
-/** 条目单位；老数据没有 u 字段时按 g */
-function iu(it){ return (it && it.u) === "ml" ? "ml" : "g"; }
 
 /** 改名后重新查食物库并自动补全成分 */
 function renameDraftItem(i, newName){
@@ -2753,8 +2776,8 @@ function patchItem(i){
     if (kc) kc.textContent = Math.round(it.kcal) + " kcal";
     const mac = box.querySelector(".mac");
     if (mac) mac.innerHTML = macInner(it, i);
-    const un = box.querySelector(".unit");
-    if (un) un.textContent = iu(it);
+    const ul = box.querySelector(".unitlbl");
+    if (ul) ul.textContent = unitOf(it);
     const note = box.querySelector(".medit .xs");
     if (note) note.textContent = "这里填的是「当前 " + it.grams + "g」的总量。点应用后会按此换算出每 100g 基准，之后再改克数仍会自动按比例重算。";
   }
@@ -2811,7 +2834,7 @@ function renderMealSheet(){
           '<button class="st" data-mstep="' + i + ':-10">−</button>' +
           '<input type="number" inputmode="decimal" data-mgram="' + i + '" value="' + it.grams + '"' +
             ' onfocus="this.select()">' +
-          '<button class="unit" data-munit="' + i + '" title="点一下切换 g / ml">' + iu(it) + '</button>' +
+          '<span class="unitlbl">' + unitOf(it) + '</span>' +
           '<button class="st" data-mstep="' + i + ':10">＋</button>' +
           '<div class="spacer"></div>' +
           '<div class="kc b" style="color:' + C.kcal + ';font-variant-numeric:tabular-nums">' + Math.round(it.kcal) + ' kcal</div>' +
@@ -3063,7 +3086,7 @@ function quickParse(){
     const hit = matchFood(it.name);
     if (hit && hit.score >= 0.65){
       const f = itemFromFood(hit.food, it.grams);
-      if (it.u) f.u = it.u;              // 用户写了 ml 就以 ml 为准
+      if (it.u) f.u = it.u;
       ok.push(f);
     }
     else miss.push(it.name + " " + it.grams + "g");
@@ -3188,7 +3211,7 @@ function parseImportLocal(text){
       if (hit && hit.score >= 0.65){
         const f = itemFromFood(hit.food, it.grams);
         f.name = it.name;
-        if (it.u) f.u = it.u;            // 原文写了 ml 就按 ml
+        if (it.u) f.u = it.u;
         m.items.push(f);
       } else {
         m.items.push({ name:it.name, grams:it.grams, src:"ai",
@@ -3309,11 +3332,20 @@ async function cleanupImported(){
 
 /* ---------------------------- 设置：写入 ---------------------------- */
 function setPath(obj, path, val){ const ks = path.split("."); let o = obj; for (let i = 0; i < ks.length - 1; i++) o = o[ks[i]]; o[ks[ks.length - 1]] = val; }
+/* 即使允许手填，也设不成有害的值 */
+const SET_BOUNDS = { proteinPerKg:[1.2,3.0], fatPerKg:[0.5,1.5],
+                     sodiumTarget:[1000,3500], fiberTarget:[10,50],
+                     manualTDEE:[800,6000], ratePerWeek:[0.1,1.2] };
 function applySetting(el){
   const path = el.dataset.set;
   let v = el.value;
   if (el.type === "number"){
     if (v === "") v = null; else v = num(v);
+    const b = SET_BOUNDS[path];
+    if (v != null && b){
+      const c = clamp(v, b[0], b[1]);
+      if (c !== v){ v = c; el.value = c; toast("已限制在合理范围 " + b[0] + " ~ " + b[1], "err"); }
+    }
   }
   setPath(S.settings, path, v);
   if (path === "ai.key"){ /* 保持字符串 */ }
@@ -4007,13 +4039,6 @@ function wireEvents(){
       return;
     }
     if ((el = hit("[data-mdeli]"))){ S.mealDraft.items.splice(num(el.dataset.mdeli), 1); S.macroOpen = null; renderMealSheet(); return; }
-    if ((el = hit("[data-munit]"))){
-      const i = num(el.dataset.munit);
-      const it = S.mealDraft.items[i];
-      it.u = (it.u === "ml") ? "g" : "ml";   // 只换标签，数值与换算逻辑都不变
-      patchItem(i);
-      return;
-    }
     if ((el = hit("[data-mmacro]"))){
       const i = num(el.dataset.mmacro);
       S.macroOpen = (S.macroOpen === i) ? null : i;
@@ -4220,8 +4245,7 @@ function wireEvents(){
                   f:num($("#cfF").value), na:num($("#cfNa").value), fib:num($("#cfFib").value) };
     const perServing = $("#cfPerServing").checked;
     const gram = perServing ? num($("#cfGram").value) || 100 : 100;
-    const rec = Object.assign({ id:uid(), name, perServing, gram, cat:"cond",
-                                u:(($("#cfUnit") || {}).value === "ml" ? "ml" : "g") }, per);
+    const rec = Object.assign({ id:uid(), name, perServing, gram, cat:"cond" }, per);
     S.customFoods.push(rec); saveLocal(); rebuildFoodIx();
     addFoodToDraft(name, 100, true);
     toast("已保存并添加", "ok");
