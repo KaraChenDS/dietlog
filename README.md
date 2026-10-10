@@ -507,6 +507,46 @@ J. 启动            init()
 
 ## 十一、AI 识图走 coding plan
 
+### 密钥从哪来
+
+你的 coding plan API Key 定义在 **`~/.zshrc` 第 3 行**（一个全局环境变量 `CODING_PLAN_API_KEY`），
+所以 DSH 和其它 GUI 应用都能读到它。把那个值复制出来，粘到 App 的「设置 → AI 识图」。
+
+> 注意：要粘**密钥本身**（约 33 字符）。填错会得到 HTTP 403 —— App 会明确提示「密钥被拒绝」，
+> 而不是含糊地说解析失败。
+
+### 这个网关有三个坑（都已实测并处理）
+
+| 坑 | 现象 | App 的处理 |
+|---|---|---|
+| **默认强制 SSE 流** | 不带 `stream` 字段时返回 `text/event-stream`，`res.json()` 直接解析失败 | 请求显式带 `"stream": false`；另外保留 SSE 解析兜底，网关万一忽略该字段也能拼回正文 |
+| **推理模型很吃 token** | `deepseek/deepseek-v4.1-flash` 识别一餐要用 **5126** 个 token（几乎全花在思考上），`max_tokens` 给小了正文为空 | 上限提到 **8000**；正文为空且只有 `reasoning_content` 时给出明确提示 |
+| **鉴权失败返回 403 而非 401** | 缺失鉴权头才是 401，错误的 Bearer 一律 403 `forbidden` | 把 401/403 都映射为「密钥被拒绝」，并说明要填的是 Key 本身 |
+
+### 模型实测对比
+
+同一张食谱图 + 真实识别 prompt，5 个支持图片的模型表现：
+
+| 模型 | 耗时 | 输出 token | 识别结果 |
+|---|---|---|---|
+| **`zhipu/glm-5.3-flashx`** | **6s** | **729** | 白米饭 / 煎牛排 / 西兰花 ✅ **默认** |
+| `ali/qwen3.8-flash` | 28s | 2170 | 白米饭 / 煎猪排 / 西兰花 |
+| `deepseek/deepseek-v4.1-flash` | 27s | 5126 | 白米饭 / 煎猪排 / 豌豆 |
+| `xiaomi/mimo-v2.6-pro` | 43s | 1830 | 白米饭 / 煎鸡排 / 西兰花 |
+| `deepseek/deepseek-v4-pro` | 7s | 246 | **0 项** ❌ 不推荐 |
+
+所以默认选了 **`glm-5.3-flashx`**：比 v4.1-flash 快 4.5 倍、省 7 倍 token，识别还更准。
+设置页可以一键切换其它模型。
+
+### CORS
+
+已实测该端点返回 CORS 头（`access-control-allow-origin` 回显请求来源、
+`access-control-allow-methods: POST`），所以静态页面可以直连，**不需要任何代理**。
+
+---
+
+## 十一·五、AI 识图走 coding plan（原始说明）
+
 默认已指向你的 coding plan，不额外按量计费：
 
 ```
