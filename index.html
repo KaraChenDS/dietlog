@@ -352,6 +352,13 @@ details.card.fold[open]>summary .chev{transform:rotate(90deg)}
 details.card.fold[open]>summary:hover{background:transparent}
 .fold-b{padding:15px}
 .fold-b>*:first-child{margin-top:0}
+/* 首页「今日还能吃什么」的建议块 */
+.sug{background:var(--surface-2);border:1px solid var(--border);border-radius:12px;
+  padding:10px 11px;margin-bottom:9px}
+.sug-h{display:flex;justify-content:space-between;align-items:center;gap:8px;
+  font-size:12.5px;font-weight:750;margin-bottom:5px}
+.sug-b{font-size:12px;line-height:1.65;color:var(--text-2);margin-bottom:9px}
+.sug-b b{color:var(--text);font-variant-numeric:tabular-nums}
 /* 分组内的「高级」二级折叠：默认收起，避免把常用设置淹掉 */
 details.subadv{margin-top:13px;border-top:1px dashed var(--border);padding-top:11px}
 details.subadv>summary{list-style:none;cursor:pointer;font-size:11.5px;font-weight:700;
@@ -1081,7 +1088,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v2.7";
+const APP_VER = "v3.0";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -2206,6 +2213,138 @@ function mealSection(date, type){
   }
   return h + '</div>';
 }
+/* ---------- 当日剩余方案参考 ----------
+   静态餐单没用：你吃完早餐它就过期了。所以按「当天剩余额度」等比缩放模板 ——
+   记一笔就重算一遍，永远回答「现在还能吃什么、各吃多少」。
+   模板的配比是按你的习惯定的（早晚餐自己做 / 午餐食堂 / 有空气炸锅 / 不吃全麦面包）。 */
+const MEAL_TPL = {
+  breakfast:{ icon:"🌅", name:"早餐", foods:[["馒头",55],["鸡蛋(全)",100],["蛋清",60],["豆浆(无糖)",250]] },
+  lunch:    { icon:"🍱", name:"午餐", foods:[["杂粮饭(熟)",100],["牛肉(瘦)",100],["炒青菜",150],["魔芋丝",200]] },
+  snack:    { icon:"🍎", name:"加餐", foods:[["火龙果",150],["希腊酸奶(无糖)",100]] },
+  dinner:   { icon:"🌙", name:"晚餐", foods:[["紫薯(蒸)",90],["虾仁",150],["西兰花",200],["橄榄油",8]] },
+  pre:      { icon:"🏃", name:"练前", foods:[["香蕉",80]] },
+  post:     { icon:"💪", name:"练后", foods:[["蛋白粉(乳清)",20],["香蕉",60]] }
+};
+const TPL_FOR = { breakfast:"breakfast", lunch:"lunch", dinner:"dinner", snack:"snack" };
+
+/** 等比缩放一套模板到目标热量；克数取 5g 整数，并夹在合理区间内 */
+function scaleTpl(key, budgetKcal){
+  const rows = ((MEAL_TPL[key] || {}).foods || [])
+    .map(([n, g]) => ({ name:n, g, f:FOOD_IX[n] })).filter(r => r.f);
+  if (!rows.length) return [];
+  const base = rows.reduce((a, r) => a + r.f.kcal / 100 * r.g, 0) || 1;
+  const k = clamp(budgetKcal / base, 0.4, 2.2);
+  return rows.map(r => ({ name:r.name, g:Math.max(5, Math.round(r.g * k / 5) * 5) }));
+}
+function tplMacros(items){
+  const t = { kcal:0, p:0, c:0, f:0, na:0 };
+  for (const it of items){
+    const f = FOOD_IX[it.name]; if (!f) continue;
+    t.kcal += f.kcal / 100 * it.g; t.p += f.p / 100 * it.g;
+    t.c += f.c / 100 * it.g; t.f += f.f / 100 * it.g; t.na += f.na / 100 * it.g;
+  }
+  t.kcal = Math.round(t.kcal);
+  return t;
+}
+/** 今天还有哪几餐没记（有内容才算记过） */
+function pendingMeals(d){
+  const logged = {};
+  for (const m of (d && d.meals) || []) if ((m.items || []).length) logged[m.type] = 1;
+  return ["breakfast", "lunch", "dinner", "snack"].filter(t => !logged[t]);
+}
+/** 生成当日方案：把剩余额度按各餐模板的基准热量占比分下去 */
+function dayPlan(date){
+  const d = S.days[date], tg = computeTargets(), m = dayMacros(d);
+  const rem = Math.max(0, tg.kcal - m.kcal);
+  const pend = pendingMeals(d);
+  if (!pend.length || rem < 150) return null;
+  const bases = pend.map(t => {
+    const rows = ((MEAL_TPL[TPL_FOR[t]] || {}).foods || []).map(([n, g]) => ({ n, g, f:FOOD_IX[n] })).filter(r => r.f);
+    return rows.reduce((a, r) => a + r.f.kcal / 100 * r.g, 0) || 1;
+  });
+  const sumB = bases.reduce((a, b) => a + b, 0);
+  const meals = pend.map((t, i) => {
+    const items = scaleTpl(TPL_FOR[t], rem * bases[i] / sumB);
+    return { type:t, items, m:tplMacros(items) };
+  });
+  // 5g 取整会累积出几十 kcal 的误差，最后削一遍，保证建议总量不超剩余额度
+  let over = meals.reduce((a, x) => a + x.m.kcal, 0) - rem;
+  if (over > 0){
+    const all = [];
+    for (const meal of meals) for (const it of meal.items){
+      const f = FOOD_IX[it.name];
+      if (f && f.kcal > 0) all.push({ it, f, perG:f.kcal / 100, pPerKcal:(f.p / f.kcal) * 100 });
+    }
+    // 只削「碳水填充类」：蛋白来源要保（保肌肉），油脂要保（有激素下限）。
+    // 取整误差本来就该由主食吸收。
+    all.sort((a, b) => a.pPerKcal - b.pPerKcal);   // 蛋白密度最低的先削
+    for (const x of all){
+      if (over <= 0) break;
+      if (x.pPerKcal > 8) continue;                // 蛋白来源不削
+      if (x.f.f > 50) continue;                 // 油脂不削
+      const canDrop = x.it.g - 5;
+      if (canDrop <= 0) continue;
+      const need = Math.ceil(over / x.perG / 5) * 5;
+      const dec = Math.min(canDrop, need);
+      x.it.g -= dec; over -= dec * x.perG;
+    }
+    for (const meal of meals) meal.m = tplMacros(meal.items);
+  }
+  return { rem, meals, pend };
+}
+
+/** 首页的「还能吃什么」模块 */
+function eatPlanCard(date, tg, m){
+  const isT = date === today();
+  if (!isT) return "";                       // 只有今天才有「剩余」的概念
+  const rem = Math.round(tg.kcal - m.kcal);
+  const rp = Math.max(0, tg.protein - m.protein), rc = Math.max(0, tg.carbs - m.carbs);
+  const rf = Math.max(0, tg.fat - m.fat),      rn = Math.max(0, tg.sodium - m.sodium);
+  const plan = dayPlan(date);
+  const done = !plan;
+
+  let h = '<div class="card"><div class="card-h"><h2>🍽️ 今日还能吃什么</h2><span class="hint">' +
+    (done ? "额度已用完或都已记录" : "按剩余额度实时算") + '</span></div>';
+
+  // 剩余额度条
+  const bar = (label, cur, target, unit, color) => {
+    const pct = target ? clamp(cur / target * 100, 0, 100) : 0;
+    const left = Math.max(0, target - cur);
+    return '<div style="margin-bottom:7px"><div style="display:flex;justify-content:space-between;' +
+      'font-size:11px;font-weight:650;margin-bottom:3px"><span class="muted">' + label + '</span>' +
+      '<span style="font-variant-numeric:tabular-nums">剩 <b style="color:' + (left <= 0 ? "var(--danger)" : color) + '">' +
+      Math.round(left) + '</b>' + unit + ' / ' + Math.round(target) + unit + '</span></div>' +
+      '<div style="height:5px;border-radius:3px;background:var(--surface-3);overflow:hidden">' +
+      '<div style="height:100%;width:' + pct.toFixed(1) + '%;border-radius:3px;background:' + color + '"></div></div></div>';
+  };
+  h += bar("热量", m.kcal, tg.kcal, " kcal", C.kcal) +
+       bar("蛋白质", m.protein, tg.protein, " g", C.protein) +
+       bar("碳水", m.carbs, tg.carbs, " g", C.carbs) +
+       bar("脂肪", m.fat, tg.fat, " g", C.fat) +
+       '<div class="xs muted" style="margin-top:2px">钠还可以吃 ' + Math.round(rn) + ' mg</div>';
+
+  if (done){
+    h += '<div class="alert ' + (rem <= 50 ? "ok" : "warn") + '" style="margin-top:11px"><span class="ai">' +
+      (rem <= 50 ? "🎉" : "⚠️") + '</span><div>' +
+      (rem <= 50 ? "今天的额度刚好用完了，不用再补。" : ("还剩 " + rem + " kcal 没吃 —— 缺口过大反而会掉肌肉，建议补一点蛋白。")) +
+      '</div></div></div>';
+    return h;
+  }
+
+  h += '<div style="margin-top:12px">';
+  for (const meal of plan.meals){
+    const t = MEAL_TPL[TPL_FOR[meal.type]];
+    h += '<div class="sug"><div class="sug-h"><span>' + t.icon + ' ' + t.name + '</span>' +
+      '<span class="muted" style="font-weight:500">' + meal.m.kcal + ' kcal · P' + meal.m.p.toFixed(0) +
+      ' C' + meal.m.c.toFixed(0) + ' F' + meal.m.f.toFixed(0) + '</span></div>' +
+      '<div class="sug-b">' + meal.items.map(i => esc(i.name) + ' <b>' + i.g + 'g</b>').join(' · ') + '</div>' +
+      '<button class="btn sm" data-fillsug="' + meal.type + '">填入' + t.name + '</button></div>';
+  }
+  h += '</div>';
+  h += '<div class="xs muted" style="margin-top:9px">按你习惯的配比等比缩放。记完一餐这里会自动重算。</div>';
+  return h + '</div>';
+}
+
 function renderToday(){
   const date = S.date, d = S.days[date];
   const tg = computeTargets(), m = dayMacros(d), t = effectiveTDEE();
@@ -2242,6 +2381,8 @@ function renderToday(){
       '计划速率 ' + S.settings.ratePerWeek + ' kg/周' + (proj.actual != null ? '，近期实际 ' + (proj.actual * 7).toFixed(2) + ' kg/周' : '') + '。</div></div>';
   }
   h += '</div>';
+
+  h += eatPlanCard(date, tg, m);
 
   h += '<div class="card"><div class="card-h"><h2>📊 营养素</h2><span class="hint">按 ' + tg.weight + 'kg 体重计算</span></div>' +
     macroBar("蛋白质", C.protein, m.p, tg.protein, "g", 1) +
@@ -4038,6 +4179,19 @@ function wireEvents(){
     if ((el = hit("[data-del]"))){
       const [ty, ix] = el.dataset.del.split(":");
       await delDayItem(ty, num(ix)); return;
+    }
+    if ((el = hit("[data-fillsug]"))){
+      // 把首页「还能吃什么」里的建议直接填进餐次草稿，用户仍可自由改克数
+      const type = el.dataset.fillsug;
+      const plan = dayPlan(S.date);
+      const meal = plan && plan.meals.find(x => x.type === type);
+      if (!meal){ toast("这餐的额度不够了", "err"); return; }
+      S.pendingMeal = { date:S.date, type };
+      S.mealDraft = { type, at:"", items:meal.items.map(i => itemFromFood(FOOD_IX[i.name], i.g)), photo:null };
+      S.mealMsg = "";
+      openSheet("sheetMeal");
+      renderMealSheet();
+      return;
     }
     if ((el = hit("[data-add]"))){ openMeal(el.dataset.add); return; }
     if ((el = hit("[data-item]"))){ const [ty] = el.dataset.item.split(":"); openMeal(ty); return; }
