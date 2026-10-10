@@ -232,10 +232,18 @@ button.stat:active{transform:scale(.97);border-color:var(--brand)}
      只靠 translateY 百分比在桌面上移不干净（位移量是面板自身高度的 102%，清不出 100vh），
      会残留半屏盖在下层面板之上并把点击全部吞掉。 */
   transform:translateY(102%);opacity:0;visibility:hidden;pointer-events:none;
-  transition:transform .3s cubic-bezier(.32,.72,0,1),opacity .2s ease,visibility .3s;
+  /* 关闭时：等动画播完（0.3s）再执行 visibility 的离散翻转，这样还能看到滑出 */
+  transition:transform .3s cubic-bezier(.32,.72,0,1),opacity .2s ease,visibility 0s .3s;
   box-shadow:var(--shadow-lg);
 }
-.sheet.on{transform:translateY(0);opacity:1;visibility:visible;pointer-events:auto}
+/* 打开时 visibility 必须 0s 立即翻转：否则一旦 CSS 过渡不推进
+   （标签页在后台、动画被节流、prefers-reduced-motion 等），
+   面板会停在 visibility:hidden —— 看着是打开的，但内部所有点击都命中不到。
+   可用性绝不能押在「动画是否推进」上。 */
+.sheet.on{
+  transform:translateY(0);opacity:1;visibility:visible;pointer-events:auto;
+  transition:transform .3s cubic-bezier(.32,.72,0,1),opacity .2s ease,visibility 0s;
+}
 .sheet-in{max-width:720px;margin:0 auto;width:100%;display:flex;flex-direction:column;
   min-height:0;flex:1 1 auto;max-height:100%}
 .sheet-h{display:flex;align-items:center;gap:10px;padding:16px 18px 12px;border-bottom:1px solid var(--border);
@@ -1004,7 +1012,7 @@ const DEFAULT_SETTINGS = {
   // 默认走 coding plan（你的订阅）；也可切到 DeepSeek 官方 API 或其它兼容端点。
   // key 只存本机 localStorage，绝不写进代码、导出或同步载荷。
   ai:{ provider:"codeplan", baseUrl:"https://ai-kas.kso.net/codeplan/v1",
-       model:"deepseek/deepseek-v4.1-flash", key:"" },
+       model:"zhipu/glm-5.3-flashx", key:"" },
   // 只内置 owner/repo/path，绝不内置 token：公开页面无法安全持有密钥。
   // token 只存本机 localStorage，导出与同步载荷都会剥离它。
   sync:{ owner:"KaraChenDS", repo:"dietlog-data", path:"dietlog.json", token:"", auto:true }
@@ -1479,24 +1487,79 @@ async function shrinkImage(file, maxDim, q){
 
 function aiReady(){ return !!(S.settings.ai && S.settings.ai.key); }
 
+/** 把 SSE 分块拼成完整文本 —— 有些网关无视 stream:false 仍返回流 */
+async function readSSE(res){
+  const reader = res.body.getReader();
+  const dec = new TextDecoder();
+  let buf = "", out = "";
+  for (;;){
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream:true });
+    const lines = buf.split("\n");
+    buf = lines.pop();
+    for (const line of lines){
+      const str = line.trim();
+      if (!str.startsWith("data:")) continue;
+      const payload = str.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      try {
+        const j = JSON.parse(payload);
+        const ch = j.choices && j.choices[0];
+        const d = ch && (ch.delta || ch.message);
+        if (d && d.content) out += d.content;
+      } catch(e){}
+    }
+  }
+  if (!out) throw new Error("流式响应里没有正文内容");
+  return out;
+}
 async function aiCall(messages, temperature){
   const a = S.settings.ai;
   if (!a.key) throw new Error("还没填 API Key。去「设置 › AI 识图」填入，key 只存在这台设备上。");
   const url = a.baseUrl.replace(/\/+$/, "") + "/chat/completions";
-  const res = await fetch(url, {
-    method:"POST",
-    headers:{ "Content-Type":"application/json", "Authorization":"Bearer " + a.key },
-    body: JSON.stringify({ model:a.model, messages, temperature:(temperature == null ? 0.2 : temperature), max_tokens:2400 })
-  });
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), 120000);
+  let res;
+  try {
+    res = await fetch(url, {
+      method:"POST",
+      headers:{ "Content-Type":"application/json", "Authorization":"Bearer " + a.key },
+      body: JSON.stringify({
+        model: a.model,
+        messages,
+        temperature: (temperature == null ? 0.2 : temperature),
+        // 实测：deepseek v4.1-flash 识别一餐要用 5126 个 token（几乎全花在思考上），
+        // 给小了正文会是空的。8000 留足余量（各家上限都 ≥16000）。
+        max_tokens: 8000,
+        // coding plan 网关默认强制 SSE，必须显式关掉，否则 res.json() 直接解析失败
+        stream: false
+      }),
+      signal: ctl.signal
+    });
+  } catch(e){
+    clearTimeout(timer);
+    if (e && e.name === "AbortError") throw new Error("请求超时（120 秒）。推理模型较慢，可换个更快的模型再试。");
+    throw new Error("连不上识图接口：" + ((e && e.message) || e) + "（网络被限制或需要代理）");
+  }
+  clearTimeout(timer);
   if (!res.ok){
     let detail = "";
-    try { detail = (await res.text()).slice(0, 400); } catch(e){}
+    try { detail = (await res.text()).slice(0, 300); } catch(e){}
+    if (res.status === 401 || res.status === 403)
+      throw new Error("密钥被拒绝（HTTP " + res.status + "）。确认填的是 coding plan 的 API Key 本身，" +
+        "不是账号密码或其它令牌。" + (detail ? " 服务端说明：" + detail : ""));
     throw new Error("接口返回 " + res.status + "：" + detail);
   }
+  const ct = (res.headers.get("content-type") || "").toLowerCase();
+  if (ct.includes("text/event-stream")) return await readSSE(res);   // 兜底
   const j = await res.json();
-  const c = j && j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
-  if (!c) throw new Error("接口没有返回内容");
-  return c;
+  const m = j && j.choices && j.choices[0] && j.choices[0].message;
+  if (!m) throw new Error("接口没有返回内容");
+  if (!m.content && m.reasoning_content)
+    throw new Error("模型把 token 全用在「思考」上了，没输出正文。换个非推理模型（如 zhipu/glm-5.3-flashx）再试。");
+  if (!m.content) throw new Error("接口返回了空内容");
+  return m.content;
 }
 
 /** 从模型输出里稳健地抠出 JSON */
@@ -3624,15 +3687,20 @@ function switchView(v){
 
 /* ---------------------------- 事件绑定 ---------------------------- */
 const AI_PRESET = {
-  codeplan:{ baseUrl:"https://ai-kas.kso.net/codeplan/v1", model:"deepseek/deepseek-v4.1-flash" },
+  // 实测：glm-5.3-flashx 识别一餐 6 秒 / 729 token，比 v4.1-flash 快 4.5 倍、省 7 倍且更准
+  codeplan:{ baseUrl:"https://ai-kas.kso.net/codeplan/v1", model:"zhipu/glm-5.3-flashx" },
   deepseek:{ baseUrl:"https://api.deepseek.com", model:"deepseek-flash" },
   zhipu:{ baseUrl:"https://open.bigmodel.cn/api/paas/v4", model:"glm-4v-flash" },
   qwen:{ baseUrl:"https://dashscope.aliyuncs.com/compatible-mode/v1", model:"qwen-vl-plus" }
 };
 /* coding plan 上支持图片输入的模型（据 DSH 的 provider 配置） */
+/* 实测排序（同一张食谱图，真实识别 prompt）：
+   glm-5.3-flashx 6s/729tok  ✅推荐   |  deepseek-v4-pro 7s/246tok 0项 ❌
+   deepseek-v4.1-flash 27s/5126tok   |  ali/qwen3.8-flash 28s/2170tok
+   xiaomi/mimo-v2.6-pro 43s/1830tok  */
 const CODEPLAN_VISION_MODELS = [
-  "deepseek/deepseek-v4.1-flash", "deepseek/deepseek-v4-pro",
-  "zhipu/glm-5.3-flashx", "xiaomi/mimo-v2.6-pro", "ali/qwen3.8-flash"
+  "zhipu/glm-5.3-flashx", "ali/qwen3.8-flash", "deepseek/deepseek-v4.1-flash",
+  "xiaomi/mimo-v2.6-pro", "deepseek/deepseek-v4-pro"
 ];
 function wireEvents(){
   document.addEventListener("click", async e => {
