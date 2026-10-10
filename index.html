@@ -370,11 +370,17 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
 .item-edit .mhint{font-size:10.5px;font-weight:650;margin:-3px 0 8px 2px;line-height:1.45}
 .item-edit .mhint.ok{color:var(--brand)}
 .item-edit .mhint.warn{color:var(--warn)}
+.item-edit .mhint.muted2{color:var(--muted)}
 .item-edit .mtog{margin-left:auto;font-size:10.5px;font-weight:700;color:var(--brand);
   background:var(--brand-soft);border-radius:99px;padding:4px 10px;cursor:pointer;flex:0 0 auto}
 .item-edit .medit{margin-top:10px;padding-top:10px;border-top:1px dashed var(--border)}
 .item-edit .medit input{padding:7px 9px;font-size:12.5px;font-weight:700}
 .item-edit .medit .fl{margin-bottom:3px}
+/* 可点的 g/ml 单位标签：液体类食物用 ml 更符合直觉 */
+.item-edit .g .unit{min-width:40px;height:34px;padding:0 9px;border-radius:10px;flex:0 0 auto;
+  background:var(--surface-3);font-size:11.5px;font-weight:800;color:var(--text-2);
+  cursor:pointer;letter-spacing:.02em;transition:transform .12s,background .15s}
+.item-edit .g .unit:active{transform:scale(.93);background:var(--brand-soft);color:var(--brand)}
 .item-edit .g{display:flex;align-items:center;gap:7px;margin-bottom:9px}
 .item-edit .g input{width:80px;text-align:center;padding:8px;font-weight:750;font-variant-numeric:tabular-nums}
 .item-edit .g .st{width:34px;height:34px;border-radius:10px;background:var(--surface-3);display:grid;place-items:center;
@@ -509,6 +515,8 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
     <div class="sheet-h"><h3>自定义食物</h3><button class="icon-btn" data-close>✕</button></div>
     <div class="sheet-b">
       <div style="margin-bottom:12px"><label class="fl">名称</label><input id="cfName" placeholder="例如：妈妈做的红烧排骨" /></div>
+      <div style="margin-bottom:12px"><label class="fl">计量单位</label>
+        <select id="cfUnit"><option value="g">g（固体）</option><option value="ml">ml（液体，如豆浆/汤）</option></select></div>
       <div class="grid2" style="margin-bottom:12px">
         <div><label class="fl">热量 kcal/100g</label><input id="cfKcal" type="number" inputmode="decimal" placeholder="0" /></div>
         <div><label class="fl">蛋白质 g/100g</label><input id="cfP" type="number" inputmode="decimal" placeholder="0" /></div>
@@ -990,10 +998,24 @@ const FOODS = [
 ["芝麻酱","cond",630,19.2,22.7,52.7,40,5.9],
 ["千岛酱","cond",480,1.0,15.0,46.0,700,0]
 ];
-/* 建立索引：名称 -> 营养对象（每100g） */
+/* 液体类食物用 ml 计量（豆浆/牛奶/汤/饮品/油/酱油醋）。
+   水基液体 1ml ≈ 1g，营养表按每 100g 给的值与每 100ml 基本一致，
+   所以内部换算逻辑完全不变，只是显示与输入的标签换成 ml。
+   不列酸奶、黄油：那是用勺吃的，按 g 更自然。 */
+const LIQUID_NAMES = new Set([
+  "豆浆(无糖)","豆浆(加糖)","豆浆(便利)","牛奶(全脂)","牛奶(脱脂)","低脂牛奶",
+  "橄榄油","花生油","菜籽油",
+  "紫菜蛋花汤","西红柿鸡蛋汤","冬瓜排骨汤","罗宋汤","玉米排骨汤",
+  "美式咖啡(无糖)","拿铁(中杯)","生椰拿铁","卡布奇诺",
+  "奶茶(全糖)","奶茶(三分糖)","珍珠奶茶","可乐","无糖可乐","橙汁(鲜榨)",
+  "啤酒","白酒(52度)","红酒","运动饮料","电解质水(零卡)","椰子水",
+  "生抽","老抽","蚝油","醋"
+]);
+/* 建立索引：名称 -> 营养对象（每100g / 每100ml） */
 const FOOD_IX = {};
 for (const f of FOODS) {
-  FOOD_IX[f[0]] = { name:f[0], cat:f[1], kcal:f[2], p:f[3], c:f[4], f:f[5], na:f[6], fib:f[7]||0, per:100 };
+  FOOD_IX[f[0]] = { name:f[0], cat:f[1], kcal:f[2], p:f[3], c:f[4], f:f[5], na:f[6], fib:f[7]||0,
+                    per:100, u: LIQUID_NAMES.has(f[0]) ? "ml" : "g" };
 }
 /* 自定义食物（用户添加）会合并进 FOOD_IX 运行时索引 */
 
@@ -1159,7 +1181,8 @@ function rebuildFoodIx(){
     const per = f.perServing ? (f.gram || 100) : 100;
     const sc = 100 / (per || 100);
     FOOD_IX[f.name] = { name:f.name, cat:f.cat || "cond", custom:true,
-      kcal:f.kcal*sc, p:f.p*sc, c:f.c*sc, f:f*sc, na:f.na*sc, fib:(f.fib||0)*sc, per:100 };
+      kcal:f.kcal*sc, p:f.p*sc, c:f.c*sc, f:f*sc, na:f.na*sc, fib:(f.fib||0)*sc, per:100,
+      u: f.u || "g" };
   }
 }
 async function loadAll(){
@@ -1635,16 +1658,29 @@ function nutri(food, grams){
 }
 
 /* --- 拍照识别一餐 --- */
-const PROMPT_MEAL = `你是专业营养师。请识别这张餐食照片里的所有食物，并估算摄入量。
+const PROMPT_MEAL = `你是专业营养师。识别这张餐食照片里的所有食物，估算重量与营养。
 只输出 JSON，不要任何解释文字，格式如下：
-{"items":[{"name":"白米饭","grams":180,"cooking":"蒸","kcal":209,"protein":4.7,"carbs":46.6,"fat":0.5,"sodium":5,"fiber":0.5,"confidence":0.8}],"note":""}
-要求：
-1. name 用中国人最常用的叫法，尽量具体（写"清蒸鲈鱼"而不是"鱼"，写"全脂牛奶"而不是"奶"）。
-2. grams 是可食部分的重量估算，参考常见餐具与餐盘比例。
-3. 营养值按 grams 的总量计算，不是每 100g。
-4. 单位：kcal 千卡；protein/carbs/fat/fiber 克；sodium 毫克。
-5. 中式炒菜的烹调用油和盐常被严重低估，请按实际用油量计入脂肪与钠。
-6. 不确定的菜名后面加"（估）"并降低 confidence。
+{"items":[{"name":"白米饭","grams":180,"unit":"g","cooking":"蒸","portion":"约一平碗","kcal":209,"protein":4.7,"carbs":46.6,"fat":0.5,"sodium":5,"fiber":0.5,"confidence":0.8}],"note":""}
+
+【重量估算——这是本次任务最重要的一项】
+用户看不到自己吃了多少克，只能靠你估。必须真的按画面估算，禁止偷懒填 100。
+参考锚点（请据此换算，并按餐盘/筷子/勺子的比例校正）：
+· 一平碗米饭 ≈ 200g   半碗 ≈ 100g   一汤勺 ≈ 15g
+· 一个鸡蛋 ≈ 50g      一个手掌大小的肉/鱼 ≈ 100-150g
+· 一个拳头大小的蔬菜 ≈ 100g   一筷子菜 ≈ 15-20g
+· 一杯牛奶/豆浆 ≈ 250ml   一罐饮料 ≈ 330ml   一标准碗汤 ≈ 250ml
+· 一片吐司 ≈ 30g      一个包子 ≈ 80g    一个饺子 ≈ 15g
+同时用 portion 字段写一句人话的参照，让用户能自己核对，例如：
+"约一平碗"、"约一个手掌大"、"约两个鸡蛋"、"约一杯"、"约半盘"。
+
+【其它要求】
+1. name 用中国人最常用的叫法，尽量具体（写"清蒸鲈鱼"而不是"鱼"）。
+2. 营养值按 grams 的**总量**计算，不是每 100g。
+3. 单位：kcal 千卡；protein/carbs/fat/fiber 克；sodium 毫克。
+4. 中式炒菜的烹调用油和盐常被严重低估，请按实际用油量计入脂肪与钠。
+5. unit：液体（豆浆、牛奶、汤、饮料、酒、油、酱油醋）写 "ml"，其余写 "g"。
+6. confidence 要诚实：画面清晰、份量有把握给 0.8-0.95；被遮挡或看不出份量给 0.4-0.6。
+   把握不大时在 name 后加"（估）"。
 7. 如果照片里没有食物，返回 {"items":[],"note":"未识别到食物"}。`;
 
 async function analyzeMealPhoto(dataUrl){
@@ -1659,6 +1695,9 @@ async function analyzeMealPhoto(dataUrl){
     name:String(x.name || "未知食物").trim(),
     grams:Math.max(1, Math.round(num(x.grams) || 100)),
     cooking:String(x.cooking || "").trim(),
+    portion:String(x.portion || "").trim().slice(0, 20),
+    conf: num(x.confidence) || 0.5,
+    u: (String(x.unit || "").toLowerCase() === "ml") ? "ml" : "g",
     kcal:Math.round(num(x.kcal)),
     p:r1(num(x.protein != null ? x.protein : x.p)),
     c:r1(num(x.carbs != null ? x.carbs : x.c)),
@@ -1734,8 +1773,12 @@ function parseTextMealLocal(text){
     if (/^(早餐|午餐|晚餐|加餐|早饭|午饭|晚饭|夜宵)$/.test(chunk)) continue;
     let grams = null, name = chunk;
     // 形如 "米饭200g" / "鸡胸 150克" / "牛奶250ml"
+    let u = null;
     let m = chunk.match(/^(.+?)[\s]*([\d.]+)\s*(kg|公斤|斤|克|g|毫升|ml|升|l|L)$/);
-    if (m){ name = m[1]; grams = num(m[2]) * (UNIT_G[m[3]] || 1); }
+    if (m){
+      name = m[1]; grams = num(m[2]) * (UNIT_G[m[3]] || 1);
+      u = /毫升|ml|升|l|L/.test(m[3]) ? "ml" : "g";     // 写明毫升/升的按 ml 记
+    }
     if (grams == null){
       m = chunk.match(/^(.+?)[\s]*([\d.]+)\s*(个|只|颗|枚|根|片|块|碗|杯|份|勺|盒|瓶|罐|袋)$/);
       if (m){
@@ -1760,7 +1803,7 @@ function parseTextMealLocal(text){
     name = name.replace(/[（(].*?[)）]/g, "").trim();
     if (!isFoodName(name)) continue;      // 挡住「但无法确定具体日期」这类散文碎块
     const hit = matchFood(name);
-    out.push({ name, grams:Math.max(1, Math.round(grams)),
+    out.push({ name, grams:Math.max(1, Math.round(grams)), u,
                matched: hit ? { name:hit.food.name, score:hit.score, how:hit.how } : null });
   }
   return out;
@@ -2587,10 +2630,12 @@ function applyGrams(it, g){
   return it;
 }
 function itemFromFood(food, grams){
-  const it = { name:food.name, grams:grams || 100, src:"db", lib:food.name,
+  const it = { name:food.name, grams:grams || 100, src:"db", lib:food.name, u:food.u || "g",
                ref:{ kcal:food.kcal, p:food.p, c:food.c, f:food.f, na:food.na, fib:food.fib } };
   return applyGrams(it, grams || 100);
 }
+/** 条目单位；老数据没有 u 字段时按 g */
+function iu(it){ return (it && it.u) === "ml" ? "ml" : "g"; }
 
 /** 改名后重新查食物库并自动补全成分 */
 function renameDraftItem(i, newName){
@@ -2636,6 +2681,46 @@ function openMeal(type, date){
   renderMealSheet();
   openSheet("sheetMeal");
 }
+/** 条目的宏量那一行（可单独重渲染） */
+function macInner(it, i){
+  return '<span>蛋白 <b>' + it.p.toFixed(1) + '</b></span>' +
+    '<span>碳水 <b>' + it.c.toFixed(1) + '</b></span>' +
+    '<span>脂肪 <b>' + it.f.toFixed(1) + '</b></span>' +
+    '<span>钠 <b>' + Math.round(it.na) + '</b></span>' +
+    (it.fib ? '<span>纤维 <b>' + it.fib.toFixed(1) + '</b></span>' : '') +
+    '<button class="mtog" data-mmacro="' + i + '">' + (S.macroOpen === i ? "收起" : "手动调整") + '</button>';
+}
+/** 本餐合计（可单独重渲染） */
+function mealTotalHtml(){
+  const dr = S.mealDraft;
+  if (!dr || !dr.items.length) return "";
+  const tot = dr.items.reduce((a, i) => ({ kcal:a.kcal + i.kcal, p:a.p + i.p, c:a.c + i.c, f:a.f + i.f, na:a.na + i.na }),
+                              { kcal:0, p:0, c:0, f:0, na:0 });
+  const tg = computeTargets();
+  return '<div class="stat" style="margin-top:10px"><div class="l">本餐合计</div>' +
+    '<div class="v">' + Math.round(tot.kcal) + '<small>kcal</small></div>' +
+    '<div class="d">蛋白 ' + tot.p.toFixed(1) + 'g · 碳水 ' + tot.c.toFixed(1) + 'g · 脂肪 ' + tot.f.toFixed(1) +
+    'g · 钠 ' + Math.round(tot.na) + 'mg　（占全天热量 ' + (tg.kcal ? Math.round(tot.kcal / tg.kcal * 100) : 0) + '%）</div></div>';
+}
+/** 只改某一个条目的数字，绝不重建 DOM。
+    以前改克数走的是 renderMealSheet()，键盘每按一下就重建整张列表 →
+    输入框被销毁、焦点丢失、手机键盘收起，改个三位数要点三次输入框。 */
+function patchItem(i){
+  const it = S.mealDraft.items[i]; if (!it) return;
+  const box = document.querySelector('.item-edit[data-idx="' + i + '"]');
+  if (box){
+    const kc = box.querySelector(".kc");
+    if (kc) kc.textContent = Math.round(it.kcal) + " kcal";
+    const mac = box.querySelector(".mac");
+    if (mac) mac.innerHTML = macInner(it, i);
+    const un = box.querySelector(".unit");
+    if (un) un.textContent = iu(it);
+    const note = box.querySelector(".medit .xs");
+    if (note) note.textContent = "这里填的是「当前 " + it.grams + "g」的总量。点应用后会按此换算出每 100g 基准，之后再改克数仍会自动按比例重算。";
+  }
+  const tot = $("#mealTotal");
+  if (tot) tot.innerHTML = mealTotalHtml();
+}
 function renderMealSheet(){
   const dr = S.mealDraft;
   // 照片
@@ -2664,29 +2749,34 @@ function renderMealSheet(){
           : it.src === "unknown"
           ? '<div class="mhint warn">未匹配到食物库 → 点「手动调整」自己填，或改用库里已有的叫法</div>'
           : '';
+      // AI 估的份量参照 + 把握程度：让用户能判断这个克数可不可信、要不要改
+      let aihint = "";
+      if (it.src !== "db"){
+        const bits = [];
+        if (it.portion) bits.push("AI 估：" + esc(it.portion));
+        if (it.conf != null) bits.push(it.conf >= 0.75 ? "把握较大"
+                                : it.conf >= 0.55 ? "把握一般" : "把握不大，建议核对");
+        if (bits.length) aihint = '<div class="mhint ' + (it.conf != null && it.conf < 0.55 ? "warn" : "muted2") +
+          '">' + bits.join(" · ") + ' —— 克数可直接改</div>';
+      }
       const open = S.macroOpen === i;
-      return '<div class="item-edit">' +
+      return '<div class="item-edit" data-idx="' + i + '">' +
         '<div class="top">' +
           '<input class="nm-in" data-mname="' + i + '" value="' + esc(it.name) + '" placeholder="食物名称（改完自动查成分）" autocomplete="off">' +
           badge +
           '<button class="del muted" data-mdeli="' + i + '" style="font-size:15px">✕</button></div>' +
         hint +
+        aihint +
         '<div class="g">' +
           '<button class="st" data-mstep="' + i + ':-10">−</button>' +
-          '<input type="number" inputmode="decimal" data-mgram="' + i + '" value="' + it.grams + '">' +
-          '<span class="small muted b">g</span>' +
+          '<input type="number" inputmode="decimal" data-mgram="' + i + '" value="' + it.grams + '"' +
+            ' onfocus="this.select()">' +
+          '<button class="unit" data-munit="' + i + '" title="点一下切换 g / ml">' + iu(it) + '</button>' +
           '<button class="st" data-mstep="' + i + ':10">＋</button>' +
           '<div class="spacer"></div>' +
           '<div class="kc b" style="color:' + C.kcal + ';font-variant-numeric:tabular-nums">' + Math.round(it.kcal) + ' kcal</div>' +
         '</div>' +
-        '<div class="mac">' +
-          '<span>蛋白 <b>' + it.p.toFixed(1) + '</b></span>' +
-          '<span>碳水 <b>' + it.c.toFixed(1) + '</b></span>' +
-          '<span>脂肪 <b>' + it.f.toFixed(1) + '</b></span>' +
-          '<span>钠 <b>' + Math.round(it.na) + '</b></span>' +
-          (it.fib ? '<span>纤维 <b>' + it.fib.toFixed(1) + '</b></span>' : '') +
-          '<button class="mtog" data-mmacro="' + i + '">' + (open ? "收起" : "手动调整") + '</button>' +
-        '</div>' +
+        '<div class="mac">' + macInner(it, i) + '</div>' +
         (open ? (
           '<div class="medit">' +
             '<div class="grid2" style="gap:8px">' +
@@ -2704,15 +2794,7 @@ function renderMealSheet(){
         '</div>';
     }).join("");
   }
-  // 合计
-  const tot = dr.items.reduce((a, i) => ({ kcal:a.kcal + i.kcal, p:a.p + i.p, c:a.c + i.c, f:a.f + i.f, na:a.na + i.na }),
-                              { kcal:0, p:0, c:0, f:0, na:0 });
-  const tg = computeTargets();
-  $("#mealTotal").innerHTML = dr.items.length ?
-    '<div class="stat" style="margin-top:10px"><div class="l">本餐合计</div>' +
-    '<div class="v">' + Math.round(tot.kcal) + '<small>kcal</small></div>' +
-    '<div class="d">蛋白 ' + tot.p.toFixed(1) + 'g · 碳水 ' + tot.c.toFixed(1) + 'g · 脂肪 ' + tot.f.toFixed(1) +
-    'g · 钠 ' + Math.round(tot.na) + 'mg　（占全天热量 ' + (tg.kcal ? Math.round(tot.kcal / tg.kcal * 100) : 0) + '%）</div></div>' : '';
+  $("#mealTotal").innerHTML = mealTotalHtml();
   // 常吃组合
   const pv = $("#mealPresets");
   pv.innerHTML = S.presets.length
@@ -2734,14 +2816,13 @@ async function doRecognize(dataUrl, thumb){
       const hit = matchFood(it.name);
       if (hit && hit.score >= 0.8 && !/（估）/.test(it.name)){
         it.ref = { kcal:hit.food.kcal, p:hit.food.p, c:hit.food.c, f:hit.food.f, na:hit.food.na, fib:hit.food.fib };
-        it.lib = hit.food.name; it.src = "db"; libHit++;
+        it.lib = hit.food.name; it.src = "db"; it.u = hit.food.u || it.u || "g"; libHit++;
         applyGrams(it, it.grams);
       } else {
         it.ref = refFromItem(it);
         it.src = "ai";
         if (hit && hit.score >= 0.6) it.lib = hit.food.name;
       }
-      delete it.conf;
       dr.items.push(it);
     }
     if (thumb) dr.photo = thumb;
@@ -2790,7 +2871,7 @@ function renderFoodSheet(){
   $("#foodList").innerHTML = list.length ? list.map(f =>
     '<div class="sl-item" data-food="' + esc(f.name) + '">' +
       '<div class="nm">' + esc(f.name) + (f.custom ? ' <i>自定义</i>' : '') + '</div>' +
-      '<div class="kc">' + Math.round(f.kcal) + ' kcal/100g</div></div>').join("")
+      '<div class="kc">' + Math.round(f.kcal) + ' kcal/100' + (f.u === "ml" ? "ml" : "g") + '</div></div>').join("")
     : '<div class="empty">没找到，试试「自定义食物」</div>';
 }
 function addFoodToDraft(name, grams, closeAfter){
@@ -2940,7 +3021,11 @@ function quickParse(){
   const ok = [], miss = [];
   for (const it of list){
     const hit = matchFood(it.name);
-    if (hit && hit.score >= 0.65) ok.push(itemFromFood(hit.food, it.grams));
+    if (hit && hit.score >= 0.65){
+      const f = itemFromFood(hit.food, it.grams);
+      if (it.u) f.u = it.u;              // 用户写了 ml 就以 ml 为准
+      ok.push(f);
+    }
     else miss.push(it.name + " " + it.grams + "g");
   }
   if (!ok.length && !miss.length){ $("#quickResult").innerHTML = alertHtml("warn", "🤔", "没解析出食物。"); return; }
@@ -3063,6 +3148,7 @@ function parseImportLocal(text){
       if (hit && hit.score >= 0.65){
         const f = itemFromFood(hit.food, it.grams);
         f.name = it.name;
+        if (it.u) f.u = it.u;            // 原文写了 ml 就按 ml
         m.items.push(f);
       } else {
         m.items.push({ name:it.name, grams:it.grams, src:"ai",
@@ -3117,7 +3203,9 @@ async function commitImport(parsed){
         const grams = Math.max(1, Math.round(num(it.grams) || 100));
         const hit = matchFood(nm);
         if (hit && hit.score >= 0.65){
-          const f = itemFromFood(hit.food, grams); f.name = nm; meal.items.push(f);
+          const f = itemFromFood(hit.food, grams); f.name = nm;
+          if (it.u === "ml") f.u = "ml";
+          meal.items.push(f);
         } else {
           const kc = num(it.kcal), p = num(it.protein != null ? it.protein : it.p),
                 c = num(it.carbs != null ? it.carbs : it.c), ff = num(it.fat != null ? it.fat : it.f),
@@ -3125,6 +3213,7 @@ async function commitImport(parsed){
           // 没匹配到食物库、又没有营养数据 → 标成「待补」，在录入面板里高亮提醒去修正
           const unknown = (kc <= 0 && p <= 0 && c <= 0 && ff <= 0);
           const o = { name:nm, grams, src:(unknown ? "unknown" : "ai"),
+                      u:(it.u === "ml" ? "ml" : "g"),
                       kcal:kc, p, c, f:ff, na, fib:num(it.fiber) || 0 };
           o.ref = refFromItem(o);
           meal.items.push(o);
@@ -3759,9 +3848,20 @@ function wireEvents(){
     if ((el = hit("[data-mstep]"))){
       const [i, d] = el.dataset.mstep.split(":");
       const it = S.mealDraft.items[num(i)];
-      applyGrams(it, it.grams + num(d)); renderMealSheet(); return;
+      applyGrams(it, it.grams + num(d));
+      const inp = document.querySelector('[data-mgram="' + i + '"]');
+      if (inp) inp.value = it.grams;
+      patchItem(num(i));
+      return;
     }
     if ((el = hit("[data-mdeli]"))){ S.mealDraft.items.splice(num(el.dataset.mdeli), 1); S.macroOpen = null; renderMealSheet(); return; }
+    if ((el = hit("[data-munit]"))){
+      const i = num(el.dataset.munit);
+      const it = S.mealDraft.items[i];
+      it.u = (it.u === "ml") ? "g" : "ml";   // 只换标签，数值与换算逻辑都不变
+      patchItem(i);
+      return;
+    }
     if ((el = hit("[data-mmacro]"))){
       const i = num(el.dataset.mmacro);
       S.macroOpen = (S.macroOpen === i) ? null : i;
@@ -3909,9 +4009,11 @@ function wireEvents(){
     const t = e.target;
     if (t.id === "foodQ"){ foodQuery = t.value; renderFoodSheet(); return; }
     if (t.dataset && t.dataset.mgram != null){
-      const it = S.mealDraft.items[num(t.dataset.mgram)];
+      const i = num(t.dataset.mgram);
+      const it = S.mealDraft.items[i];
+      if (t.value === "") return;              // 允许清空后重打，不要强行回填
       const g = num(t.value);
-      if (g > 0){ applyGrams(it, g); renderMealSheet(); setTimeout(() => { const inp = $('[data-mgram="' + t.dataset.mgram + '"]'); if (inp){ inp.focus(); inp.setSelectionRange(inp.value.length, inp.value.length); } }, 0); }
+      if (g > 0){ applyGrams(it, g); patchItem(i); }   // 只改数字：输入框保持焦点、键盘不收起
       return;
     }
   });
@@ -3950,7 +4052,8 @@ function wireEvents(){
                   f:num($("#cfF").value), na:num($("#cfNa").value), fib:num($("#cfFib").value) };
     const perServing = $("#cfPerServing").checked;
     const gram = perServing ? num($("#cfGram").value) || 100 : 100;
-    const rec = Object.assign({ id:uid(), name, perServing, gram, cat:"cond" }, per);
+    const rec = Object.assign({ id:uid(), name, perServing, gram, cat:"cond",
+                                u:(($("#cfUnit") || {}).value === "ml" ? "ml" : "g") }, per);
     S.customFoods.push(rec); saveLocal(); rebuildFoodIx();
     addFoodToDraft(name, 100, true);
     toast("已保存并添加", "ok");
