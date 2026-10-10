@@ -335,6 +335,30 @@ button.stat:active{transform:scale(.97);border-color:var(--brand)}
 .alert.info{background:rgba(59,130,246,.10);border-color:rgba(59,130,246,.26);color:var(--text-2)}
 
 /* ---------- 同步状态条 ---------- */
+/* ---------- 可折叠的设置卡片 ---------- */
+details.card.fold{padding:0;overflow:hidden}
+details.card.fold>summary{list-style:none;cursor:pointer;padding:15px;margin:0;
+  display:flex;align-items:center;gap:10px;transition:background .15s}
+details.card.fold>summary::-webkit-details-marker{display:none}
+details.card.fold>summary:hover{background:var(--surface-2)}
+details.card.fold>summary h2{font-size:13.5px;font-weight:700;letter-spacing:.02em;
+  display:flex;align-items:center;gap:7px;flex:1;min-width:0}
+details.card.fold>summary .hint{font-size:11.5px;color:var(--muted);font-weight:500;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:45%}
+details.card.fold>summary .chev{color:var(--muted);font-size:17px;line-height:1;flex:0 0 auto;
+  transition:transform .2s cubic-bezier(.3,1,.4,1)}
+details.card.fold[open]>summary{border-bottom:1px solid var(--border)}
+details.card.fold[open]>summary .chev{transform:rotate(90deg)}
+details.card.fold[open]>summary:hover{background:transparent}
+.fold-b{padding:15px}
+.fold-b>*:first-child{margin-top:0}
+/* 顶部只读概览：四个数字一行，紧凑 */
+.statline{display:grid;grid-template-columns:repeat(4,1fr);gap:7px;text-align:center}
+.statline>div{background:var(--surface-2);border-radius:10px;padding:8px 4px}
+.statline .l{font-size:9.5px;color:var(--muted);font-weight:700;letter-spacing:.02em;margin-bottom:2px}
+.statline .v{font-size:14px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.statline .v small{font-size:9px;font-weight:650;color:var(--muted);margin-left:1px}
+
 .syncbar:empty{display:none}
 .sbar{display:flex;align-items:center;gap:7px;width:100%;text-align:left;
   font-size:11.5px;font-weight:650;padding:8px 12px;margin-bottom:11px;border-radius:11px;
@@ -1050,7 +1074,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v2.1";
+const APP_VER = "v2.3";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -2482,26 +2506,26 @@ function renderSettings(){
   const k = eveningMorningK(), se = sodiumEffect(), m = estimateTDEE();
 
   let h = '';
-  // 引擎状态
-  h += '<div class="card"><div class="card-h"><h2>⚙️ 代谢引擎</h2><span class="hint">' +
-    (t.source === "measured" ? "实测" : t.source === "manual" ? "手填" : "公式") + '</span></div>' +
-    '<div class="grid2">' + statCard("当前 TDEE", t.value, "kcal", t.source === "measured" ? "近 21 天实测" : "公式推算") +
-      statCard("基础代谢", b.value, "kcal", b.kind) + '</div>' +
-    '<div class="grid3" style="margin-top:9px">' +
-      statCard("目标摄入", tg.kcal, "kcal", "缺口 " + tg.deficit) +
-      statCard("趋势体重", fw(currentTrendWeight()), "kg") +
-      statCard("数据天数", (m ? m.nW : 0), "天", "满 " + MAGIC.minDays + " 天启用实测") + '</div>';
-  if (m) h += '<div class="chips" style="margin-top:11px">' +
-      '<span class="chip info">原始实测 ' + m.tdee + ' kcal</span>' +
-      '<span class="chip">日均摄入 ' + m.avgIntake + '</span>' +
-      '<span class="chip ' + (m.slope < 0 ? "ok" : "warn") + '">' + (m.slope * 7).toFixed(2) + ' kg/周</span></div>';
-  if (k) h += '<div class="chips" style="margin-top:8px"><span class="chip">晨重 ≈ 晚重 − ' + k.k.toFixed(1) + ' kg（n=' + k.n + '）</span></div>';
-  if (se) h += '<div class="chips" style="margin-top:8px"><span class="chip">每多吃 1g 钠 → 次日晨重 ' +
-    (se.perGram >= 0 ? "+" : "−") + Math.abs(se.perGram * 1000).toFixed(0) + ' g（r=' + se.r.toFixed(2) + '，n=' + se.n + '）</span></div>';
-  h += '</div>';
+  // 顶部只读概览：四个数字一行，比原来那张 260px 的卡紧凑得多
+  h += '<div class="card"><div class="card-h"><h2>⚙️ 当前状态</h2><span class="hint">' +
+    (t.source === "measured" ? "实测 TDEE" : t.source === "manual" ? "手填 TDEE" : "公式推算") + '</span></div>' +
+    '<div class="statline">' +
+      '<div><div class="l">TDEE</div><div class="v">' + t.value + '</div></div>' +
+      '<div><div class="l">基础代谢</div><div class="v">' + b.value + '</div></div>' +
+      '<div><div class="l">目标摄入</div><div class="v">' + tg.kcal + '</div></div>' +
+      '<div><div class="l">趋势体重</div><div class="v">' + fw(currentTrendWeight()) + '<small>kg</small></div></div>' +
+    '</div>' +
+    '<div class="chips" style="margin-top:9px">' +
+      '<span class="chip ' + (t.source === "measured" ? "ok" : "warn") + '">' + (t.source === "measured" ? "已用实测" : "还需 " + Math.max(0, MAGIC.minDays - (m ? m.nW : 0)) + " 天数据") + '</span>' +
+      (m ? '<span class="chip">' + (m.slope * 7).toFixed(2) + ' kg/周</span>' : '') +
+      (k ? '<span class="chip">晨重 ≈ 晚重 − ' + k.k.toFixed(1) + '</span>' : '') +
+      (se ? '<span class="chip">钠敏感度 r=' + se.r.toFixed(2) + '</span>' : '') +
+    '</div></div>';
 
   // 个人参数
-  h += '<div class="card"><div class="card-h"><h2>👤 个人参数</h2></div>' +
+  const pct = S.settings.ratePerWeek / currentWeight() * 100;
+  h += foldCard('profile', '👤', '个人参数',
+    p.height + 'cm · ' + currentWeight().toFixed(1) + '→' + p.goalWeight + 'kg · ' + S.settings.ratePerWeek + 'kg/周',
     '<div class="grid2" style="margin-bottom:11px">' +
       '<div><label class="fl">性别</label><select data-set="profile.sex">' +
         '<option value="female"' + (p.sex === "female" ? " selected" : "") + '>女</option>' +
@@ -2518,15 +2542,15 @@ function renderSettings(){
     '<div class="grid2">' +
       '<div><label class="fl">目标体重 kg</label><input type="number" step="0.1" data-set="profile.goalWeight" value="' + p.goalWeight + '"></div>' +
       '<div><label class="fl">目标速率 kg/周</label><input type="number" step="0.05" data-set="ratePerWeek" value="' + S.settings.ratePerWeek + '"></div>' +
-    '</div>';
-  const pct = S.settings.ratePerWeek / currentWeight() * 100;
-  h += '<div class="chips" style="margin-top:11px"><span class="chip ' + (pct > 1 ? "bad" : pct > 0.85 ? "warn" : "ok") + '">' +
+    '</div>' +
+    '<div class="chips" style="margin-top:11px"><span class="chip ' + (pct > 1 ? "bad" : pct > 0.85 ? "warn" : "ok") + '">' +
     '速率 = 体重的 ' + pct.toFixed(2) + '%/周（安全区 0.5%~1.0%）</span>' +
-    '<span class="chip">安全区 ' + (currentWeight() * 0.005).toFixed(2) + '~' + (currentWeight() * 0.01).toFixed(2) + ' kg/周</span></div>';
-  h += '</div>';
+    '<span class="chip">安全区 ' + (currentWeight() * 0.005).toFixed(2) + '~' + (currentWeight() * 0.01).toFixed(2) + ' kg/周</span></div>',
+    false);
 
   // 宏量
-  h += '<div class="card"><div class="card-h"><h2>🎯 宏量目标</h2><span class="hint">换算后 ' + tg.kcal + ' kcal</span></div>' +
+  h += foldCard('macro', '🎯', '宏量目标',
+    tg.kcal + ' kcal · 蛋白' + tg.protein + ' 碳水' + tg.carbs + ' 脂肪' + tg.fat,
     '<div class="grid3" style="margin-bottom:11px">' +
       '<div><label class="fl">蛋白 g/kg</label><input type="number" step="0.1" data-set="proteinPerKg" value="' + S.settings.proteinPerKg + '"></div>' +
       '<div><label class="fl">脂肪 g/kg</label><input type="number" step="0.1" data-set="fatPerKg" value="' + S.settings.fatPerKg + '"></div>' +
@@ -2538,13 +2562,13 @@ function renderSettings(){
       '<span class="chip" style="color:' + C.protein + '">蛋白 ' + tg.protein + 'g</span>' +
       '<span class="chip" style="color:' + C.carbs + '">碳水 ' + tg.carbs + 'g</span>' +
       '<span class="chip" style="color:' + C.fat + '">脂肪 ' + tg.fat + 'g</span>' +
-      '<span class="chip" style="color:' + C.sodium + '">钠 ' + tg.sodium + 'mg</span></div>' +
-    '</div>';
+      '<span class="chip" style="color:' + C.sodium + '">钠 ' + tg.sodium + 'mg</span></div>',
+    false);
 
   // AI
   const presetKey = aiPresetKey();
   const isCP = presetKey === "codeplan";
-  h += '<div class="card"><div class="card-h"><h2>🤖 AI 识图</h2><span class="hint">' + (ai.key ? "已配置" : "未配置") + '</span></div>' +
+  h += foldCard('ai', '🤖', 'AI 识图', ai.key ? "已配置" : "未配置，点开填 Key",
     (isCP
       ? alertHtml("info", "⭐", "当前用的是你的 <b>coding plan</b>。把 plan 的 API Key 粘到下面即可，" +
           "照片识别会走 <span class='mono'>ai-kas.kso.net/codeplan/v1</span>，不额外按量计费。<br>" +
@@ -2569,13 +2593,14 @@ function renderSettings(){
         '<button class="chip' + (m === ai.model ? " ok" : "") + '" data-aimodel="' + esc(m) + '">' + esc(m) + '</button>').join("") +
       '</div>' : '') +
     '<div class="btn-row" style="margin-top:11px"><button class="btn" id="btnTestAi">测试连接</button></div>' +
-    '<div id="aiTestOut"></div></div>';
+    '<div id="aiTestOut"></div>',
+    false);
 
   // 同步
   h += syncCard();
 
   // 数据
-  h += '<div class="card"><div class="card-h"><h2>💾 数据</h2></div>' +
+  h += foldCard('data', '💾', '数据与备份', '导出 / 导入 / 清洗',
     '<div class="btn-row" style="margin-bottom:9px"><button class="btn" id="btnExportJson">导出 JSON</button>' +
       '<button class="btn" id="btnExportCsv">导出 CSV</button></div>' +
     '<div class="btn-row" style="margin-bottom:9px"><button class="btn" id="btnOpenImport">📥 导入历史记录</button></div>' +
@@ -2586,21 +2611,22 @@ function renderSettings(){
     '<div class="hr"></div>' +
     '<div class="btn-row"><button class="btn danger" id="btnReset">清空全部数据</button></div>' +
     '<div class="small muted" style="margin-top:11px">共 ' + Object.keys(S.days).length + ' 天记录 · ' +
-      S.bcs.length + ' 次体成分 · ' + S.customFoods.length + ' 个自定义食物</div></div>';
+      S.bcs.length + ' 次体成分 · ' + S.customFoods.length + ' 个自定义食物</div>',
+    false);
 
-  h += '<div class="card"><div class="card-h"><h2>📱 版本</h2><span class="hint">' + APP_VER + '</span></div>' +
-    '<div class="small muted" style="line-height:1.8">' +
-    '构建于 <b>' + APP_BUILD + '</b>　·　食物库 <b>' + FOODS.length + '</b> 条<br>' +
+  h += foldCard('about', '📖', '关于', APP_VER + ' · ' + APP_BUILD,
+    '<div class="small muted" style="line-height:1.8;margin-bottom:12px">' +
+    '版本 <b>' + APP_VER + '</b>　构建于 <b>' + APP_BUILD + '</b>　·　食物库 <b>' + FOODS.length + '</b> 条<br>' +
     '桌面版是「网络优先」加载的：<b>联网打开就会自动拿最新版</b>。' +
-    '如果这里的版本号没变，说明拿到的是离线缓存 —— 关掉 App 重新打开即可。</div></div>';
-
-  h += '<div class="card"><div class="card-h"><h2>📖 关于算法</h2></div>' +
+    '版本号没变说明拿到的是离线缓存 —— 关掉 App 重新打开即可。</div>' +
+    '<div class="hr"></div>' +
     '<div class="small muted" style="line-height:1.7">' +
     '<b style="color:var(--text)">实测 TDEE = 平均摄入 + 体重下降速率 × 7700</b><br>' +
     '体重下降速率用近 21 天晨重的线性回归斜率，避开单日水分波动。日均摄入只统计记录完整（≥' + MAGIC.minKcal + ' kcal）的天。<br>' +
     '每日滚动平滑：<span class="mono">今天 = 0.7 × 上一次 + 0.3 × 实测</span>，防止一周波动乱跳。<br>' +
     '数据不足 ' + MAGIC.minDays + ' 天时回退到公式：有体脂率用 Katch-McArdle，否则 Mifflin-St Jeor × 活动系数。<br>' +
-    '脂肪组织能量密度取 7700 kcal/kg，这是通行的近似值，实际会随体成分变化。</div></div>';
+    '脂肪组织能量密度取 7700 kcal/kg，这是通行的近似值，实际会随体成分变化。</div>',
+    false);
 
   $('#settingsBody').innerHTML = h;
 }
@@ -3305,11 +3331,30 @@ function applySetting(el){
   rollTDEE(); renderToday(); renderTop();
 }
 
+/* 折叠分组的展开状态。renderSettings 会重建 DOM，所以状态得自己存。 */
+const SET_FOLD = {};
+function foldCard(key, icon, title, hint, body, defOpen){
+  if (SET_FOLD[key] === undefined) SET_FOLD[key] = !!defOpen;
+  return '<details class="card fold" data-fold="' + key + '"' + (SET_FOLD[key] ? " open" : "") + '>' +
+    '<summary><h2>' + icon + ' ' + esc(title) + '</h2>' +
+    (hint ? '<span class="hint">' + esc(hint) + '</span>' : '') +
+    '<span class="chev">›</span></summary>' +
+    '<div class="fold-b">' + body + '</div></details>';
+}
+
 /** 设置页的同步卡片。仓库地址是内置的，每台设备只需各自的令牌。 */
+/** 同步组的标题摘要：不展开也能看出这台设备同步是否正常 */
+function syncHint(state){
+  if (!syncReady()) return "未开启 · 点开配置";
+  if (SY.lastErr) return "异常：" + SY.lastErr.slice(0, 16);
+  const cloud = (SY.cloudDays == null) ? "?" : SY.cloudDays;
+  const local = Object.keys(S.days).length;
+  return state + " · 云" + cloud + " / 本机" + local + " 天";
+}
 function syncCard(){
   const cfg = syncCfg(), ready = syncReady();
   const state = SY.lastErr ? "异常" : (SY.lastOk ? "正常" : (ready ? "已配置" : "未配置"));
-  let h = '<div class="card"><div class="card-h"><h2>☁️ 多设备同步</h2><span class="hint">' + state + '</span></div>';
+  let h = '';    // 内容在下面拼好后再套进折叠分组
   h += '<div class="small muted" style="margin-bottom:10px;line-height:1.7">' +
     '仓库 <span class="mono">' + esc(cfg.owner) + '/' + esc(cfg.repo) + '</span>　文件 <span class="mono">' + esc(cfg.path) + '</span><br>' +
     '手机/电脑/平板填同一个仓库，各自的令牌，数据自动保持一致。</div>';
@@ -3331,8 +3376,8 @@ function syncCard(){
     '不同步：照片、AI Key、TDEE 缓存 —— 都在本机。</div>';
   if (SY.lastOk) h += '<div class="small muted" style="margin-bottom:6px">上次成功同步：' + relTime(SY.lastOk) + '</div>';
   if (SY.lastErr) h += '<div class="small" style="margin-bottom:6px;color:var(--danger)">上次失败：' + esc(SY.lastErr) + '</div>';
-  h += '<div id="syncOut"></div></div>';
-  return h;
+  h += '<div id="syncOut"></div>';
+  return foldCard('sync', '☁️', '多设备同步', syncHint(state), h, false);
 }
 /** 逐环节诊断：不同故障给不同结论，避免把网络问题当成令牌配错 */
 async function syncDiagnose(){
@@ -4129,6 +4174,12 @@ function wireEvents(){
       return;
     }
   });
+  // 记住折叠状态（details 的 toggle 事件不冒泡，所以要捕获阶段监听）
+  document.addEventListener("toggle", e => {
+    const d = e.target;
+    if (d && d.dataset && d.dataset.fold) SET_FOLD[d.dataset.fold] = d.open;
+  }, true);
+
   document.addEventListener("change", e => {
     const t = e.target;
     // 食物名改完（失焦或回车）→ 重新查食物库并自动补全成分。
