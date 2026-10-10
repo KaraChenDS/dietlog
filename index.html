@@ -1081,7 +1081,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v2.5";
+const APP_VER = "v2.7";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -3540,7 +3540,8 @@ async function importFile(file){
    ========================================================================================= */
 const SYNC_DEFAULTS = { owner:"KaraChenDS", repo:"dietlog-data", path:"dietlog.json" };
 const SYNC_STAT_KEY = "dietlog_syncstat_v1";
-const SY = { busy:false, timer:null, lastOk:0, lastErr:"",
+const SYNC_ERR_TTL = 10 * 60 * 1000;   // 错误超过 10 分钟就算过期
+const SY = { busy:false, timer:null, retry:0, retryTimer:null, lastOk:0, lastErr:"", lastErrAt:0,
              lastPull:0, lastPush:0, cloudDays:null, localDays:null };
 
 /** 本地存了空串就回落到内置默认值（否则老用户的空配置会盖掉内置默认） */
@@ -3696,20 +3697,26 @@ function loadSyncStat(){
   try { const j = JSON.parse(localStorage.getItem(SYNC_STAT_KEY) || "{}");
         SY.lastOk = j.t || 0; SY.lastErr = j.e || "";
         SY.lastPull = j.p || 0; SY.lastPush = j.u || 0;
-        SY.cloudDays = (j.cd == null ? null : j.cd); } catch(e){}
+        SY.cloudDays = (j.cd == null ? null : j.cd);
+        SY.lastErrAt = j.et || 0;
+        // 一次网络抖动不该让状态条永远红着：超过 10 分钟的错误按过期处理。
+        // （关闭 App 时打断在途请求也会产生一次这种假错误。）
+        if (SY.lastErr && (!SY.lastErrAt || Date.now() - SY.lastErrAt > SYNC_ERR_TTL)) SY.lastErr = "";
+  } catch(e){}
 }
 function saveSyncStat(){
   try { localStorage.setItem(SYNC_STAT_KEY, JSON.stringify(
-    { t:SY.lastOk, e:SY.lastErr, p:SY.lastPull, u:SY.lastPush, cd:SY.cloudDays })); } catch(e){}
+    { t:SY.lastOk, e:SY.lastErr, et:SY.lastErrAt, p:SY.lastPull, u:SY.lastPush, cd:SY.cloudDays })); } catch(e){}
 }
 /** kind: "pull" | "push" | "" —— 分别记录，这样才能看出是哪一头卡住了 */
 function syncStat(ok, err, kind){
   const now = Date.now();
   if (ok){
     SY.lastOk = now; SY.lastErr = "";
+    SY.retry = 0;                      // 成功一次就把退避计数清零
     if (kind === "pull") SY.lastPull = now;
     if (kind === "push") SY.lastPush = now;
-  } else if (err) SY.lastErr = err;
+  } else if (err){ SY.lastErr = err; SY.lastErrAt = now; }
   SY.localDays = Object.keys(S.days).length;
   saveSyncStat();
   renderSyncBar();
@@ -3739,7 +3746,8 @@ function renderSyncBar(){
     return;
   }
   if (SY.busy) el.innerHTML = '<div class="sbar busy"><span class="spin"></span> 正在同步…</div>';
-  else if (SY.lastErr) el.innerHTML = '<button class="sbar err" data-syncrefresh="1">⚠️ 同步失败：' +
+  else if (SY.lastErr && (!SY.lastErrAt || Date.now() - SY.lastErrAt < SYNC_ERR_TTL))
+    el.innerHTML = '<button class="sbar err" data-syncrefresh="1">⚠️ 同步失败：' +
       esc(SY.lastErr) + ' · 点这里重试</button>';
   else {
     const cloud = (SY.cloudDays == null) ? "?" : SY.cloudDays;
@@ -3799,8 +3807,19 @@ async function syncNowInner(silent){
     const m = netMsg(e);
     syncStat(false, m);
     if (out) out.innerHTML = alertHtml("bad", "⚠️", "同步失败：" + esc(m));
+    scheduleRetry();
     return { ok:false, why:m };
   }
+}
+/* 失败后退避重试：定时拉取是 60 秒一次，一次瞬时抖动会让 App 陈旧一整分钟。
+   5s → 15s → 60s 三次退避，成功即清零。 */
+function scheduleRetry(){
+  if (!syncReady()) return;
+  SY.retry = (SY.retry || 0) + 1;
+  if (SY.retry > 3) { SY.retry = 0; return; }
+  const delay = [5000, 15000, 60000][SY.retry - 1] || 60000;
+  clearTimeout(SY.retryTimer);
+  SY.retryTimer = setTimeout(() => { if (syncReady() && !SY.busy) syncNow(true); }, delay);
 }
 /* 并发调用时复用在跑的那一次。
    以前是「已有同步就返回 busy」，于是用户点「立即同步」看起来毫无反应。 */
@@ -3842,6 +3861,7 @@ async function pushPayload(cfg, quiet){
   } catch(e){
     const m = netMsg(e);
     if (!quiet && out) out.innerHTML = alertHtml("bad", "⚠️", "推送失败：" + esc(m));
+    scheduleRetry();
     return { ok:false, why:m };
   }
 }
