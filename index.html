@@ -464,20 +464,20 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
       <div id="todayBody"></div>
     </section>
 
-    <!-- ======================= 趋势 ======================= -->
-    <section class="view" id="view-trend">
-      <div class="seg" id="trendSeg">
+    <!-- ======================= 数据（原「趋势」+「体成分」）======================= -->
+    <section class="view" id="view-data">
+      <div class="seg" id="dataSeg">
+        <button data-d="weight" class="on">体重与热量</button>
+        <button data-d="body">体成分</button>
+      </div>
+      <div class="seg" id="trendSeg" style="margin-top:8px">
         <button data-r="day" class="on">日</button>
         <button data-r="week">周</button>
         <button data-r="month">月</button>
         <button data-r="year">年</button>
       </div>
       <div id="trendBody"></div>
-    </section>
-
-    <!-- ======================= 体成分 ======================= -->
-    <section class="view" id="view-body">
-      <div id="bodyBody"></div>
+      <div id="bodyBody" style="display:none"></div>
     </section>
 
     <!-- ======================= 设置 ======================= -->
@@ -491,8 +491,7 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
 <nav class="nav">
   <div class="nav-in">
     <button data-v="today" class="on"><span class="ni">🍽️</span>今日</button>
-    <button data-v="trend"><span class="ni">📈</span>趋势</button>
-    <button data-v="body"><span class="ni">🧬</span>体成分</button>
+    <button data-v="data"><span class="ni">📊</span>数据</button>
     <button data-v="settings"><span class="ni">⚙️</span>设置</button>
   </div>
 </nav>
@@ -1099,7 +1098,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v3.4";
+const APP_VER = "v4.0";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -2212,7 +2211,7 @@ function renderYearHeat(year){
 
 /* ============================ H. 视图渲染 ============================ */
 function renderAll(){
-  renderTop(); renderToday(); renderTrend(); renderBody(); renderSettings();
+  renderTop(); renderToday(); renderData(); renderSettings();
 }
 function renderTop(){
   const w = currentTrendWeight(), p = predict();
@@ -2533,6 +2532,20 @@ function syncTrendSeg(){
   const seg = $("#trendSeg"); if (!seg) return;
   $$("button", seg).forEach(b => b.classList.toggle("on", b.dataset.r === S.trendRange));
 }
+/* 数据页 = 原来的「趋势」+「体成分」。
+   两个渲染函数一字未改，各自仍写自己的容器，这里只负责分段切换与显隐，
+   所以这次合并纯粹是外壳改动，不碰那 160 多行图表代码。 */
+function renderData(){
+  const seg = S.dataSeg || "weight";
+  const isWeight = seg === "weight";
+  const tb = $("#trendBody"), bb = $("#bodyBody"), ts = $("#trendSeg");
+  if (tb) tb.style.display = isWeight ? "" : "none";
+  if (bb) bb.style.display = isWeight ? "none" : "";
+  if (ts) ts.style.display = isWeight ? "" : "none";      // 时间范围只对体重侧有意义
+  $$("#dataSeg button").forEach(b => b.classList.toggle("on", b.dataset.d === seg));
+  if (isWeight) renderTrend(); else renderBody();
+}
+
 function renderTrend(){
   const range = S.trendRange;
   syncTrendSeg();
@@ -4286,8 +4299,7 @@ function switchView(v){
   $$(".nav button").forEach(b => b.classList.toggle("on", b.dataset.v === v));
   $$(".view").forEach(s => s.classList.toggle("active", s.id === "view-" + v));
   window.scrollTo({ top:0, behavior:"smooth" });
-  if (v === "trend") renderTrend();
-  if (v === "body") renderBody();
+  if (v === "data") renderData();
   if (v === "settings") renderSettings();
 }
 
@@ -4326,6 +4338,7 @@ function wireEvents(){
 
     if ((el = hit("[data-v]"))){ switchView(el.dataset.v); return; }
     // 趋势页的 日/周/月/年 分段控件
+    if ((el = hit("[data-d]"))){ S.dataSeg = el.dataset.d; renderData(); return; }
     if ((el = hit("[data-r]"))){ S.trendRange = el.dataset.r; renderTrend(); return; }
     if ((el = hit("#btnTheme"))){
       const nt = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
