@@ -353,6 +353,11 @@ details.card.fold[open]>summary:hover{background:transparent}
 .fold-b{padding:15px}
 .fold-b>*:first-child{margin-top:0}
 /* 首页「今日还能吃什么」的建议块 */
+/* 补充描述：AI 最容易错的是做法与油盐，给一个说人话的修正入口 */
+.refine{background:var(--surface-2);border:1px solid var(--border);border-radius:12px;
+  padding:10px 11px;margin-bottom:11px}
+.refine input{width:100%;margin-bottom:8px}
+.refine .btn{width:100%}
 .sug{background:var(--surface-2);border:1px solid var(--border);border-radius:12px;
   padding:10px 11px;margin-bottom:9px}
 .sug-h{display:flex;justify-content:space-between;align-items:center;gap:8px;
@@ -513,6 +518,11 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
       <div class="row between" style="margin:4px 0 9px">
         <div class="b" style="font-size:12.5px">已添加的食物</div>
         <button class="btn sm ghost" id="btnAddManual">＋ 手动添加</button>
+      </div>
+      <div id="refineBox" class="refine" style="display:none">
+        <div class="xs muted" style="margin-bottom:6px">识图不准？补一句实际情况，让 AI 重算油盐与做法</div>
+        <input id="refineDesc" placeholder="例如：清蒸的，没放盐也没放油" />
+        <button class="btn sm" id="btnRefine">重算成分</button>
       </div>
       <div id="mealItems"></div>
       <div id="mealTotal"></div>
@@ -1088,7 +1098,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v3.1";
+const APP_VER = "v3.2";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -1763,6 +1773,25 @@ const PROMPT_MEAL = `你是专业营养师。识别这张餐食照片里的所�
    把握不大时在 name 后加"（估）"。
 7. 如果照片里没有食物，返回 {"items":[],"note":"未识别到食物"}。`;
 
+/* 补充描述后重算：AI 最容易错的就是烹饪方式与油盐，
+   而这两项恰好对热量和钠影响最大（一勺油 90 kcal，一撮盐 400mg 钠）。 */
+const PROMPT_REFINE = `你是专业营养师。这是同一张餐食照片，你先前的识别结果如下：
+__ITEMS__
+
+用户对照片的补充说明：「__DESC__」
+
+请据此修正烹饪方式、用油与用盐，重新计算营养值。
+要求：
+1. 食物种类与克数保持不变，除非补充说明明确改变了份量。
+2. 重点修正三件事：烹饪方式（清蒸/水煮/煎/炒/炸/烤/凉拌）、是否放油、是否放盐。
+3. 用户说没放油就不计烹调用油；说没放盐就把钠降到食材本身的水平
+   （肉类与海鲜自带约 40~80mg/100g，蔬菜更低）。
+4. 清蒸/水煮的热量应明显低于清炒（少掉烹调用油）。
+5. 只输出 JSON，不要任何解释文字：
+{"items":[{"name":"清蒸牛肉丸和西兰花","grams":250,"cooking":"清蒸","kcal":0,"protein":0,"carbs":0,"fat":0,"sodium":0,"fiber":0,"confidence":0.9}],
+ "note":"一句话说明改了什么"}
+`;
+
 async function analyzeMealPhoto(dataUrl){
   const txt = await aiCall([{ role:"user", content:[
     { type:"text", text:PROMPT_MEAL },
@@ -1771,7 +1800,11 @@ async function analyzeMealPhoto(dataUrl){
   const j = extractJson(txt);
   if (!j) throw new Error("模型没有返回可解析的 JSON");
   const raw = Array.isArray(j) ? j : (j.items || []);
-  return raw.map(x => ({
+  return raw.map(mapAiItem).filter(x => x.name && x.kcal >= 0);
+}
+/** AI 返回的一条 → 内部条目结构（识图与重算共用） */
+function mapAiItem(x){
+    return {
     name:String(x.name || "未知食物").trim(),
     grams:Math.max(1, Math.round(num(x.grams) || 100)),
     cooking:String(x.cooking || "").trim(),
@@ -1784,9 +1817,8 @@ async function analyzeMealPhoto(dataUrl){
     f:r1(num(x.fat != null ? x.fat : x.f)),
     na:Math.round(num(x.sodium != null ? x.sodium : x.na)),
     fib:r1(num(x.fiber != null ? x.fiber : x.fib)),
-    conf:num(x.confidence) || 0.5,
     src:"ai"
-  })).filter(x => x.name && x.kcal >= 0);
+    };
 }
 
 /* --- 读体脂秤截图 --- */
@@ -2978,7 +3010,14 @@ function renderMealSheet(){
   if (!dr.items.length){
     box.innerHTML = '<div class="empty">还没有食物<br><span class="xs">拍张照，或点「手动添加」</span></div>';
   } else {
-    box.innerHTML = dr.items.map((it, i) => {
+    const rb = $("#refineBox");
+  if (rb){
+    const hasAi = dr.items.some(i => i.src === "ai" || i.src === "unknown");
+    rb.style.display = hasAi ? "" : "none";        // 只有 AI 识别的条目才需要补描述
+    const ri = $("#refineDesc");
+    if (ri && dr.desc && ri.value !== dr.desc) ri.value = dr.desc;
+  }
+  box.innerHTML = dr.items.map((it, i) => {
       const badge = it.src === "db" ? '<span class="chip ok" style="padding:2px 7px;font-size:10px">库</span>'
                   : it.src === "unknown" ? '<span class="chip bad" style="padding:2px 7px;font-size:10px">待补</span>'
                   : it.src === "ai" ? '<span class="chip warn" style="padding:2px 7px;font-size:10px">AI估</span>'
@@ -3045,6 +3084,26 @@ function renderMealSheet(){
       '<button class="chip" data-savepreset="1">＋ 存为组合</button></div>'
     : '<button class="btn sm block" data-savepreset="1">＋ 把当前这餐存成常吃组合</button>';
 }
+/** 按用户的补充描述重算这一餐的成分。有照片就带上，没有就纯文本修正。 */
+async function refineMeal(desc){
+  const dr = S.mealDraft;
+  if (!dr || !dr.items.length) throw new Error("这一餐还没有食物");
+  if (!aiReady()) throw new Error("还没配 AI 密钥，去「设置 › AI 识图」填一下");
+  const list = dr.items.map(i => ({ name:i.name, grams:i.grams, cooking:i.cooking || "" }));
+  const prompt = PROMPT_REFINE
+    .replace("__ITEMS__", JSON.stringify(list, null, 0))
+    .replace("__DESC__", String(desc).replace(/["\\]/g, " "));
+  const content = [{ type:"text", text:prompt }];
+  const shot = dr.photo;
+  if (shot && /^data:image\//.test(shot)) content.push({ type:"image_url", image_url:{ url:shot } });
+  const txt = await aiCall([{ role:"user", content }]);
+  const j = extractJson(txt);
+  if (!j) throw new Error("模型没有返回可解析的 JSON");
+  const raw = (Array.isArray(j) ? j : (j.items || []));
+  if (!raw.length) throw new Error("模型没给出任何食物");
+  return { items:raw.map(mapAiItem), note:String(j.note || "").trim() };
+}
+
 async function doRecognize(dataUrl, thumb){
   const dr = S.mealDraft;
   S.mealMsg = alertHtml("info", '<span class="spin"></span>', "正在识别这餐食物…");
@@ -4235,6 +4294,44 @@ function wireEvents(){
     if ((el = hit("#btnMealSave"))){ saveMeal(); return; }
     if ((el = hit("#btnSnap"))){ $("#fileCam").click(); return; }
     if ((el = hit("#btnPickImg"))){ $("#fileImg").click(); return; }
+    if ((el = hit("#btnRefine"))){
+      const desc = ($("#refineDesc").value || "").trim();
+      if (!desc){ toast("先写一句补充说明", "err"); return; }
+      const dr = S.mealDraft;
+      const before = dr.items.map(i => ({ name:i.name, kcal:Math.round(i.kcal), na:Math.round(i.na), f:+i.f.toFixed(1) }));
+      S.mealMsg = alertHtml("info", '<span class="spin"></span>', "正在按你的说明重算…");
+      renderMealSheet();
+      try {
+        const r = await refineMeal(desc);
+        dr.desc = desc;
+        // 沿用用户已经改过的克数：同名条目以用户填的克数为准，再按新成分重算
+        const oldG = {};
+        for (const i of dr.items) oldG[normName(i.name)] = i.grams;
+        dr.items = r.items.map(it => {
+          const g = oldG[normName(it.name)];
+          if (g) it.grams = g;
+          it.ref = refFromItem(it);
+          return applyGrams(it, it.grams);
+        });
+        const after = dr.items.map(i => ({ name:i.name, kcal:Math.round(i.kcal), na:Math.round(i.na), f:+i.f.toFixed(1) }));
+        // 逐条列出变化，让用户能核对 AI 改了什么
+        const diffs = after.map((a, i) => {
+          const b = before.find(x => normName(x.name) === normName(a.name)) || before[i] || {};
+          const parts = [];
+          const dk = a.kcal - (b.kcal || 0), dn = a.na - (b.na || 0), df = a.f - (b.f || 0);
+          if (dk) parts.push("热量 " + (dk > 0 ? "+" : "") + dk);
+          if (df) parts.push("脂肪 " + (df > 0 ? "+" : "") + df + "g");
+          if (dn) parts.push("钠 " + (dn > 0 ? "+" : "") + dn + "mg");
+          return parts.length ? a.name + "：" + parts.join("、") : "";
+        }).filter(Boolean);
+        S.mealMsg = alertHtml("ok", "✅", esc(r.note || "已按你的说明重算。") +
+          (diffs.length ? "<br><span class='xs muted'>" + diffs.join("<br>") + "</span>" : ""));
+      } catch(e){
+        S.mealMsg = alertHtml("bad", "⚠️", "重算失败：" + esc(e.message));
+      }
+      renderMealSheet();
+      return;
+    }
     if ((el = hit("#rmPhoto"))){ S.mealDraft.photo = null; renderMealSheet(); return; }
     if ((el = hit("#btnAddManual"))){ foodQuery = ""; foodCat = "all"; $("#foodQ").value = ""; renderFoodSheet(); openSheet("sheetFood"); return; }
     if ((el = hit("[data-cat]"))){ foodCat = el.dataset.cat; renderFoodSheet(); return; }
