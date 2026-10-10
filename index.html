@@ -1088,7 +1088,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v3.0";
+const APP_VER = "v3.1";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -1260,10 +1260,47 @@ function dayMacros(d){
   const t = { kcal:0, p:0, c:0, f:0, na:0, fib:0 };
   if (!d) return t;
   for (const m of (d.meals || [])) for (const i of m.items){
-    t.kcal += i.kcal || 0; t.p += i.p || 0; t.c += i.c || 0;
-    t.f += i.f || 0; t.na += i.na || 0; t.fib += i.fib || 0;
+    const p = i.p || 0, c = i.c || 0, f = i.f || 0;
+    // 有些来源（AI 识别 / 文本导入）给出的 kcal 和三大宏量对不上。
+    // 缺 kcal 就按 4/4/9 折算；两者相差过大时以宏量为准，并把这条标出来。
+    const fromMacro = p * 4 + c * 4 + f * 9;
+    let k = i.kcal || 0;
+    if (!k) k = fromMacro;
+    else if (fromMacro > 0 && Math.abs(k - fromMacro) / fromMacro > 0.2)
+      k = fromMacro;      // 只用于本次统计，绝不改写 i.kcal ——
+                          // 渲染函数改数据会破坏幂等与同步，还会把自检要报的问题抹掉
+    t.kcal += k; t.p += p; t.c += c; t.f += f; t.na += i.na || 0; t.fib += i.fib || 0;
   }
   return t;
+}
+/** 自检报告 HTML：热量应等于 4×蛋白 + 4×碳水 + 9×脂肪 */
+function macroAuditHtml(){
+  const a = macroAudit();
+  if (!a.length) return alertHtml("ok", "🔢", "热量与三大宏量全部自洽（4×蛋白 + 4×碳水 + 9×脂肪 = 记录的热量）。");
+  return alertHtml("warn", "⚠️", "发现 <b>" + a.length + "</b> 条记录的<b>热量与三大宏量对不上</b>（差 >20%）。" +
+    "多半是 AI 识别或文本导入时写歪的。显示时已按 4P+4C+9F 折算，但建议核对下表：") +
+    '<div class="search-list" style="max-height:240px">' +
+    a.slice(0, 30).map(x =>
+      '<div class="sl-item" style="cursor:default"><div class="nm">' + x.date + ' · ' + esc(x.meal) + ' · ' +
+      esc(x.name) + ' ' + x.g + 'g</div><div class="kc" style="max-width:64%">记录 ' + x.kcal +
+      ' kcal，按宏量应为 ' + x.macroKcal + '（差 ' + (x.diff > 0 ? "+" : "") + x.diff + '）</div></div>').join("") + '</div>';
+}
+/** 数据自检：找出 kcal 与三大宏量对不上的条目（差异 >20% 才算） */
+function macroAudit(){
+  const bad = [];
+  for (const date of sortedDates()){
+    for (const meal of (S.days[date] || {}).meals || [])
+      for (const i of (meal.items || [])){
+        const fromMacro = (i.p || 0) * 4 + (i.c || 0) * 4 + (i.f || 0) * 9;
+        const k = i.kcal || 0;
+        if (fromMacro < 20 || !k) continue;                 // 太空的条目不判
+        const diff = k - fromMacro;
+        if (Math.abs(diff) / fromMacro > 0.2)
+          bad.push({ date, meal:meal.type, name:i.name, g:i.grams, kcal:Math.round(k),
+                     macroKcal:Math.round(fromMacro), diff:Math.round(diff) });
+      }
+  }
+  return bad;
 }
 function sortedDates(){
   const set = new Set(Object.keys(S.days));
@@ -2298,8 +2335,8 @@ function eatPlanCard(date, tg, m){
   const isT = date === today();
   if (!isT) return "";                       // 只有今天才有「剩余」的概念
   const rem = Math.round(tg.kcal - m.kcal);
-  const rp = Math.max(0, tg.protein - m.protein), rc = Math.max(0, tg.carbs - m.carbs);
-  const rf = Math.max(0, tg.fat - m.fat),      rn = Math.max(0, tg.sodium - m.sodium);
+  const rp = Math.max(0, tg.protein - m.p), rc = Math.max(0, tg.carbs - m.c),
+        rf = Math.max(0, tg.fat - m.f),      rn = Math.max(0, tg.sodium - m.na);
   const plan = dayPlan(date);
   const done = !plan;
 
@@ -2318,9 +2355,9 @@ function eatPlanCard(date, tg, m){
       '<div style="height:100%;width:' + pct.toFixed(1) + '%;border-radius:3px;background:' + color + '"></div></div></div>';
   };
   h += bar("热量", m.kcal, tg.kcal, " kcal", C.kcal) +
-       bar("蛋白质", m.protein, tg.protein, " g", C.protein) +
-       bar("碳水", m.carbs, tg.carbs, " g", C.carbs) +
-       bar("脂肪", m.fat, tg.fat, " g", C.fat) +
+       bar("蛋白质", m.p, tg.protein, " g", C.protein) +
+       bar("碳水", m.c, tg.carbs, " g", C.carbs) +
+       bar("脂肪", m.f, tg.fat, " g", C.fat) +
        '<div class="xs muted" style="margin-top:2px">钠还可以吃 ' + Math.round(rn) + ' mg</div>';
 
   if (done){
@@ -4268,7 +4305,7 @@ function wireEvents(){
       const out = $("#cleanupOut");
       if (!out) return;
       if (!r.removed){
-        out.innerHTML = alertHtml("ok", "✨", "没有发现脏数据，记录是干净的。");
+        out.innerHTML = alertHtml("ok", "✨", "没有发现不像食物的脏条目。") + macroAuditHtml();
         toast("没有发现脏数据", "ok");
         return;
       }
@@ -4279,6 +4316,7 @@ function wireEvents(){
         r.daysTouched + "</b> 天" + (r.emptiedMeals ? "，清空了 " + r.emptiedMeals + " 个空餐次" : "") +
         "。下面的清单是对照，如果误删了真实食物，重新加回来即可。") +
         '<div class="search-list" style="max-height:240px">' + rows + '</div>';
+      out.innerHTML += macroAuditHtml();
       toast("已清理 " + r.removed + " 条脏数据", "ok");
       return;
     }
