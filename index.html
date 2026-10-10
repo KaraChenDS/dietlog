@@ -1047,6 +1047,10 @@ const MEALS = {
   snack:{ label:"加餐", icon:"🍎", color:"#a855f7" }
 };
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
+/* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
+   所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
+const APP_VER = "v1.6";
+const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
 /* ============================ C. 工具函数 ============================ */
@@ -2580,6 +2584,12 @@ function renderSettings(){
     '<div class="small muted" style="margin-top:11px">共 ' + Object.keys(S.days).length + ' 天记录 · ' +
       S.bcs.length + ' 次体成分 · ' + S.customFoods.length + ' 个自定义食物</div></div>';
 
+  h += '<div class="card"><div class="card-h"><h2>📱 版本</h2><span class="hint">' + APP_VER + '</span></div>' +
+    '<div class="small muted" style="line-height:1.8">' +
+    '构建于 <b>' + APP_BUILD + '</b>　·　食物库 <b>' + FOODS.length + '</b> 条<br>' +
+    '桌面版是「网络优先」加载的：<b>联网打开就会自动拿最新版</b>。' +
+    '如果这里的版本号没变，说明拿到的是离线缓存 —— 关掉 App 重新打开即可。</div></div>';
+
   h += '<div class="card"><div class="card-h"><h2>📖 关于算法</h2></div>' +
     '<div class="small muted" style="line-height:1.7">' +
     '<b style="color:var(--text)">实测 TDEE = 平均摄入 + 体重下降速率 × 7700</b><br>' +
@@ -3320,6 +3330,7 @@ async function syncDiagnose(){
   const cfg = syncCfg(), log = [];
   const show = () => { out.innerHTML = '<pre class="diag">' + esc(log.join("\n")) + '</pre>'; };
   const add = (ok, t) => { log.push((ok === null ? "·" : ok ? "✅" : "❌") + " " + t); show(); };
+  log.push("App 版本：" + APP_VER + "（构建于 " + APP_BUILD + "）");
   log.push("仓库：" + cfg.owner + "/" + cfg.repo + "　文件：" + cfg.path); show();
   add(!!cfg.token, cfg.token ? "本机已保存令牌（" + cfg.token.slice(0, 8) + "…）" : "本机没有令牌，先在上面填入");
   if (!cfg.token) return;
