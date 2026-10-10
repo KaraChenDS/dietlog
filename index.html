@@ -354,6 +354,10 @@ details.card.fold[open]>summary:hover{background:transparent}
 .fold-b>*:first-child{margin-top:0}
 /* 首页「今日还能吃什么」的建议块 */
 /* 补充描述：AI 最容易错的是做法与油盐，给一个说人话的修正入口 */
+/* 组合的内联编辑区（不用 prompt/confirm：iOS PWA 里不可靠） */
+.pedit{margin-top:9px;padding-top:10px;border-top:1px dashed var(--border)}
+.pedit .fl{margin-bottom:3px}
+.sug .btn-row{gap:6px}
 .refine{background:var(--surface-2);border:1px solid var(--border);border-radius:12px;
   padding:10px 11px;margin-bottom:11px}
 .refine input{width:100%;margin-bottom:8px}
@@ -480,6 +484,11 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
       <div id="bodyBody" style="display:none"></div>
     </section>
 
+    <!-- ======================= 餐食管理 ======================= -->
+    <section class="view" id="view-meals">
+      <div id="mealsBody"></div>
+    </section>
+
     <!-- ======================= 设置 ======================= -->
     <section class="view" id="view-settings">
       <div id="settingsBody"></div>
@@ -492,6 +501,7 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
   <div class="nav-in">
     <button data-v="today" class="on"><span class="ni">🍽️</span>今日</button>
     <button data-v="data"><span class="ni">📊</span>数据</button>
+    <button data-v="meals"><span class="ni">🍱</span>餐食</button>
     <button data-v="settings"><span class="ni">⚙️</span>设置</button>
   </div>
 </nav>
@@ -1084,6 +1094,7 @@ const DEFAULT_SETTINGS = {
   // key 只存本机 localStorage，绝不写进代码、导出或同步载荷。
   ai:{ provider:"codeplan", baseUrl:"https://ai-kas.kso.net/codeplan/v1",
        model:"zhipu/glm-5.3-flashx", key:"" },
+  avoid:[],          // 忌口食物名清单（从食物库勾选）
   // 只内置 owner/repo/path，绝不内置 token：公开页面无法安全持有密钥。
   // token 只存本机 localStorage，导出与同步载荷都会剥离它。
   sync:{ owner:"KaraChenDS", repo:"dietlog-data", path:"dietlog.json", token:"", auto:true }
@@ -1098,7 +1109,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v4.0";
+const APP_VER = "v4.3";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -1813,7 +1824,7 @@ const PROMPT_TEXT_MEAL = `你是专业营养师。用户用一句话描述了他
 
 async function analyzeMealText(desc){
   const txt = await aiCall([{ role:"user", content:[
-    { type:"text", text:PROMPT_TEXT_MEAL.replace("__DESC__", String(desc).replace(/["\\]/g, " ")) }
+    { type:"text", text:PROMPT_TEXT_MEAL.replace("__DESC__", String(desc).replace(/["\\]/g, " ")) + avoidPromptLine() }
   ]}]);
   const j = extractJson(txt);
   if (!j) throw new Error("模型没有返回可解析的 JSON");
@@ -1823,7 +1834,7 @@ async function analyzeMealText(desc){
 
 async function analyzeMealPhoto(dataUrl){
   const txt = await aiCall([{ role:"user", content:[
-    { type:"text", text:PROMPT_MEAL },
+    { type:"text", text:PROMPT_MEAL + avoidPromptLine() },
     { type:"image_url", image_url:{ url:dataUrl } }
   ]}]);
   const j = extractJson(txt);
@@ -2211,7 +2222,7 @@ function renderYearHeat(year){
 
 /* ============================ H. 视图渲染 ============================ */
 function renderAll(){
-  renderTop(); renderToday(); renderData(); renderSettings();
+  renderTop(); renderToday(); renderData(); renderMeals(); renderSettings();
 }
 function renderTop(){
   const w = currentTrendWeight(), p = predict();
@@ -2325,14 +2336,65 @@ const MEAL_TPL = {
 };
 const TPL_FOR = { breakfast:"breakfast", lunch:"lunch", dinner:"dinner", snack:"snack" };
 
-/** 等比缩放一套模板到目标热量；克数取 5g 整数，并夹在合理区间内 */
+/* ---------- 忌口与自动替补 ----------
+   用户勾掉「不吃香菜」之后，推荐不能只是剔除：那一项没了，热量缺口会变大，
+   份量配比也不再是原来那套。所以要换一个同类别、营养最接近的补上。
+   替补关系不需要手工标注 —— 食物库每条都有类别与热量/蛋白/脂肪/钠，
+   直接算归一化距离即可。 */
+
+/** 不做替补的：油炸/卤味/甜点/高钠加工品。拿它们替换健康食材是本末倒置 */
+const NO_SUB = /油炸|炸鸡|炸|薯条|薯片|糖|奶昔|冰淇淋|培根|香肠|腊|卤|烧烤|烤肠|泡面|奶茶|肥|五花|皮/;
+
+function avoidSet(){
+  return new Set(((S.settings && S.settings.avoid) || []).map(normName));
+}
+function isAvoided(name){ return avoidSet().has(normName(name)); }
+/** 把忌口清单拼成给模型的一段话；没有忌口就返回空串 */
+function avoidPromptLine(){
+  const a = (S.settings && S.settings.avoid) || [];
+  return a.length ? ("\n用户已声明忌口，**绝对不要出现或建议这些食物**：" + a.join("、") + "。") : "";
+}
+
+/** 在同类别里找营养最接近、且未被忌口、未在本餐用过的食物。
+    遍历顺序固定 + 严格小于，保证同一份数据每次得到同一个结果（否则每次渲染都会变）。 */
+function substituteFor(name, avoid, used){
+  const src = FOOD_IX[name];
+  if (!src || !src.cat || src.kcal <= 0) return null;
+  let best = null, bestD = Infinity;
+  for (const nm of Object.keys(FOOD_IX)){
+    if (avoid.has(normName(nm)) || used.has(nm)) continue;
+    const f = FOOD_IX[nm];
+    if (f.cat !== src.cat || f.custom || f.kcal <= 0) continue;
+    if (NO_SUB.test(nm)) continue;
+    const d = Math.abs(f.kcal - src.kcal) / 120 +
+              Math.abs(f.p - src.p) / 12 +
+              Math.abs(f.f - src.f) / 10 +
+              Math.abs(f.na - src.na) / 250;
+    if (d < bestD){ bestD = d; best = f; }
+  }
+  return bestD <= 1.6 ? best : null;      // 差太远就不硬换，宁可不要这一项
+}
+
+/** 等比缩放一套模板到目标热量；克数取 5g 整数，并夹在合理区间内。
+    忌口的项会先被替换成同类替补（swappedFrom 记下原食物，供界面说明）。 */
 function scaleTpl(key, budgetKcal){
-  const rows = ((MEAL_TPL[key] || {}).foods || [])
-    .map(([n, g]) => ({ name:n, g, f:FOOD_IX[n] })).filter(r => r.f);
+  const avoid = avoidSet(), used = new Set();
+  const rows = [];
+  for (const [n, g] of ((MEAL_TPL[key] || {}).foods || [])){
+    let nm = n, f = FOOD_IX[n];
+    if (!f) continue;
+    if (avoid.has(normName(n))){
+      const sub = substituteFor(n, avoid, used);
+      if (!sub) continue;                  // 实在找不到同类替补才剔除
+      nm = sub.name; f = sub;
+    }
+    used.add(nm);
+    rows.push({ name:nm, g, f, swappedFrom: nm === n ? null : n });
+  }
   if (!rows.length) return [];
   const base = rows.reduce((a, r) => a + r.f.kcal / 100 * r.g, 0) || 1;
   const k = clamp(budgetKcal / base, 0.4, 2.2);
-  return rows.map(r => ({ name:r.name, g:Math.max(5, Math.round(r.g * k / 5) * 5) }));
+  return rows.map(r => ({ name:r.name, g:Math.max(5, Math.round(r.g * k / 5) * 5), swappedFrom:r.swappedFrom }));
 }
 function tplMacros(items){
   const t = { kcal:0, p:0, c:0, f:0, na:0 };
@@ -2435,7 +2497,10 @@ function eatPlanCard(date, tg, m){
     h += '<div class="sug"><div class="sug-h"><span>' + t.icon + ' ' + t.name + '</span>' +
       '<span class="muted" style="font-weight:500">' + meal.m.kcal + ' kcal · P' + meal.m.p.toFixed(0) +
       ' C' + meal.m.c.toFixed(0) + ' F' + meal.m.f.toFixed(0) + '</span></div>' +
-      '<div class="sug-b">' + meal.items.map(i => esc(i.name) + ' <b>' + i.g + 'g</b>').join(' · ') + '</div>' +
+      '<div class="sug-b">' + meal.items.map(i =>
+        esc(i.name) + ' <b>' + i.g + 'g</b>' +
+        (i.swappedFrom ? ' <span class="muted" style="font-size:10.5px">（替 ' + esc(i.swappedFrom) + '）</span>' : '')
+      ).join(' · ') + '</div>' +
       '<button class="btn sm" data-fillsug="' + meal.type + '">填入' + t.name + '</button></div>';
   }
   h += '</div>';
@@ -2535,6 +2600,103 @@ function syncTrendSeg(){
 /* 数据页 = 原来的「趋势」+「体成分」。
    两个渲染函数一字未改，各自仍写自己的容器，这里只负责分段切换与显隐，
    所以这次合并纯粹是外壳改动，不碰那 160 多行图表代码。 */
+/* ---------- 餐食管理 ----------
+   两块内容，按用户要求「常吃组合」置顶：
+     1) 常吃组合：增删改 + 一键记入某一餐
+     2) 我的忌口：从食物库勾选，首页推荐会自动换同类替补，AI 三个入口也会避开 */
+
+/** 给老数据补 id：导入去重按名字，一改名就会产生重复，必须按 id */
+function presetsMigrated(){
+  let ch = false;
+  for (const p of (S.presets || [])) if (!p.id){ p.id = uid(); ch = true; }
+  if (ch) saveLocal();
+  return ch;
+}
+function renderMeals(){
+  presetsMigrated();
+  const avoid = (S.settings.avoid || []);
+  let h = "";
+
+  // ── 常吃组合（置顶）──
+  h += '<div class="card"><div class="card-h"><h2>🍱 常吃组合</h2><span class="hint">' +
+    S.presets.length + ' 个</span></div>';
+  if (!S.presets.length){
+    h += '<div class="small muted" style="line-height:1.8">还没有组合。<br>' +
+      '在「今日 › 某一餐 › 存为组合」把常吃的一餐存下来，之后一键就能记。</div>';
+  } else {
+    for (const p of S.presets){
+      const tot = (p.items || []).reduce((a, i) => {
+        const f = FOOD_IX[i.name]; return f ? a + f.kcal / 100 * i.grams : a;
+      }, 0);
+      h += '<div class="sug"><div class="sug-h"><span>' + esc(p.icon || "🍱") + ' ' + esc(p.name) + '</span>' +
+        '<span class="muted" style="font-weight:500">' + Math.round(tot) + ' kcal</span></div>' +
+        '<div class="sug-b">' + (p.items || []).map(i =>
+          esc(i.name) + ' <b>' + i.grams + 'g</b>').join(' · ') + '</div>' +
+        (S.editPreset === p.id
+          ? '<div class="pedit">' +
+              '<div class="grid2" style="gap:8px">' +
+                '<div><label class="fl">名称</label><input data-pname="' + p.id + '" value="' + esc(p.name) + '"></div>' +
+                '<div><label class="fl">图标</label><input data-picon="' + p.id + '" value="' + esc(p.icon || "🍱") + '" maxlength="4"></div>' +
+              '</div>' +
+              '<div class="btn-row" style="gap:6px;margin-top:9px">' +
+                '<button class="btn sm primary" data-psave="' + p.id + '">保存</button>' +
+                '<button class="btn sm" data-pcancel="1">取消</button>' +
+              '</div>' +
+            '</div>'
+          : '<div class="btn-row" style="gap:6px;flex-wrap:wrap">' +
+              '<button class="btn sm primary" data-logpreset="' + p.id + '">记入一餐</button>' +
+              '<button class="btn sm" data-editpreset="' + p.id + '">改名</button>' +
+              '<button class="btn sm danger" data-delpreset="' + p.id + '">' +
+                (S.delConfirm === p.id ? "确认删除？" : "删除") + '</button>' +
+            '</div>') +
+        '</div>';
+    }
+  }
+  h += '</div>';
+
+  // ── 我的忌口 ──
+  h += '<div class="card"><div class="card-h"><h2>🚫 我的忌口</h2><span class="hint">' +
+    (avoid.length ? avoid.length + " 项" : "未设置") + '</span></div>' +
+    '<div class="small muted" style="line-height:1.8;margin-bottom:11px">' +
+    '勾掉不吃的，首页推荐会<b>换一个同类的补上</b>（不是简单删掉），AI 识图与拆解也会避开。</div>';
+  if (avoid.length){
+    h += '<div class="chips">' + avoid.map(n =>
+      '<button class="chip bad" data-unavoid="' + esc(n) + '">' + esc(n) + ' ✕</button>').join("") + '</div>';
+  }
+  h += '<div class="sec-title" style="margin-top:12px">从食物库添加</div>' +
+    '<input id="avoidSearch" placeholder="搜食物名，例如：香菜、西兰花" oninput="renderAvoidList()">' +
+    '<div id="avoidList" class="search-list" style="max-height:260px;margin-top:9px"></div>' +
+    '</div>';
+
+  $("#mealsBody").innerHTML = h;
+  renderAvoidList();
+}
+/** 忌口候选列表：默认列常吃的那些类别，输入后按名字搜 */
+function renderAvoidList(){
+  const box = $("#avoidList"); if (!box) return;
+  const q = ($("#avoidSearch") ? $("#avoidSearch").value : "").trim();
+  const avoid = new Set((S.settings.avoid || []).map(normName));
+  let list;
+  if (q){
+    list = Object.keys(FOOD_IX).filter(n => normName(n).includes(normName(q))).slice(0, 40);
+  } else {
+    // 不搜时按类别给一批最常见的，避免一上来就是 278 条
+    const PICK = ["veg","meat","fish","staple","fruit","soy","drink","dish"];
+    list = [];
+    for (const c of PICK){
+      list = list.concat(Object.keys(FOOD_IX).filter(n => FOOD_IX[n].cat === c).slice(0, 6));
+    }
+  }
+  box.innerHTML = list.length
+    ? list.map(n => {
+        const f = FOOD_IX[n], off = avoid.has(normName(n));
+        return '<div class="sl-item" style="cursor:pointer" data-avoid="' + esc(n) + '">' +
+          '<div class="nm">' + esc(n) + '</div>' +
+          '<div class="kc" style="max-width:52%">' + f.kcal + 'kcal · ' + (off ? "✅ 已忌口" : "＋ 加入") + '</div></div>';
+      }).join("")
+    : '<div class="small muted" style="padding:12px;text-align:center">没找到这个食物。换个叫法试试，或者去「设置 › 自定义食物」加一条。</div>';
+}
+
 function renderData(){
   const seg = S.dataSeg || "weight";
   const isWeight = seg === "weight";
@@ -3136,7 +3298,7 @@ async function refineMeal(desc){
   const prompt = PROMPT_REFINE
     .replace("__ITEMS__", JSON.stringify(list, null, 0))
     .replace("__DESC__", String(desc).replace(/["\\]/g, " "));
-  const content = [{ type:"text", text:prompt }];
+  const content = [{ type:"text", text:prompt + avoidPromptLine() }];
   const shot = dr.photo;
   if (shot && /^data:image\//.test(shot)) content.push({ type:"image_url", image_url:{ url:shot } });
   const txt = await aiCall([{ role:"user", content }]);
@@ -4019,7 +4181,8 @@ async function mergeRemote(data){
   }
   // 常吃组合 / 自定义食物：按名字并集
   for (const p of (data.presets || []))
-    if (p && p.name && !S.presets.some(x => x.name === p.name)){ S.presets.push(p); changed++; }
+    // 按 id 去重：早先按名字去重，一改名下次导入就会产生重复
+    if (p && p.name && !S.presets.some(x => x.id === p.id && p.id)){ S.presets.push(p); changed++; }
   for (const f of (data.customFoods || []))
     if (f && f.name && !S.customFoods.some(x => x.name === f.name)){ S.customFoods.push(f); changed++; }
   if (changed) rebuildFoodIx();
@@ -4300,6 +4463,7 @@ function switchView(v){
   $$(".view").forEach(s => s.classList.toggle("active", s.id === "view-" + v));
   window.scrollTo({ top:0, behavior:"smooth" });
   if (v === "data") renderData();
+  if (v === "meals") renderMeals();
   if (v === "settings") renderSettings();
 }
 
@@ -4339,6 +4503,55 @@ function wireEvents(){
     if ((el = hit("[data-v]"))){ switchView(el.dataset.v); return; }
     // 趋势页的 日/周/月/年 分段控件
     if ((el = hit("[data-d]"))){ S.dataSeg = el.dataset.d; renderData(); return; }
+    if ((el = hit("[data-avoid]"))){
+      const n = el.dataset.avoid;
+      const a = S.settings.avoid || (S.settings.avoid = []);
+      if (!a.some(x => normName(x) === normName(n))) a.push(n);
+      saveLocal(); renderMeals(); renderToday(); scheduleSync(); toast("已加入忌口：" + n, "ok"); return;
+    }
+    if ((el = hit("[data-unavoid]"))){
+      const n = el.dataset.unavoid;
+      S.settings.avoid = (S.settings.avoid || []).filter(x => normName(x) !== normName(n));
+      saveLocal(); renderMeals(); renderToday(); scheduleSync(); toast("已移出忌口：" + n, "ok"); return;
+    }
+    if ((el = hit("[data-delpreset]"))){
+      // 不用 confirm()：iOS 独立 PWA 里原生弹窗可能被屏蔽，而且会阻塞渲染。
+      // 改成两段式：第一下变「确认删除？」，第二下才真删。
+      const id = el.dataset.delpreset;
+      const p = S.presets.find(x => x.id === id);
+      if (!p) return;
+      if (S.delConfirm !== id){ S.delConfirm = id; renderMeals(); toast("再点一次确认删除", "err"); return; }
+      S.delConfirm = null;
+      S.presets = S.presets.filter(x => x.id !== id);
+      saveLocal(); renderMeals(); renderToday(); scheduleSync(); toast("已删除「" + p.name + "」", "ok"); return;
+    }
+    if ((el = hit("[data-editpreset]"))){ S.editPreset = el.dataset.editpreset; S.delConfirm = null; renderMeals(); return; }
+    if ((el = hit("[data-pcancel]"))){ S.editPreset = null; renderMeals(); return; }
+    if ((el = hit("[data-psave]"))){
+      const id = el.dataset.psave;
+      const p = S.presets.find(x => x.id === id);
+      if (!p) return;
+      const nm = ($('[data-pname="' + id + '"]') || {}).value;
+      const ic = ($('[data-picon="' + id + '"]') || {}).value;
+      if (nm && nm.trim()) p.name = nm.trim();
+      p.icon = (ic || "").trim() || "🍱";
+      S.editPreset = null;
+      saveLocal(); renderMeals(); renderToday(); scheduleSync(); toast("已更新", "ok"); return;
+    }
+    if ((el = hit("[data-logpreset]"))){
+      const p = S.presets.find(x => x.id === el.dataset.logpreset);
+      if (!p || !(p.items || []).length) return;
+      // 按当前时间猜一餐，用户仍可在面板里改
+      const hh = new Date().getHours();
+      const guess = hh < 10 ? "breakfast" : hh < 15 ? "lunch" : hh < 21 ? "dinner" : "snack";
+      p.lastMeal = guess;
+      S.pendingMeal = { date:S.date, type:guess };
+      S.mealDraft = { type:S.pendingMeal.type, at:"", photo:null,
+                      items:p.items.map(i => { const f = FOOD_IX[i.name]; return f ? itemFromFood(f, i.grams) : null; }).filter(Boolean) };
+      S.mealMsg = "";
+      openSheet("sheetMeal"); renderMealSheet();
+      toast("已填入「" + p.name + "」，核对后可改", "ok"); return;
+    }
     if ((el = hit("[data-r]"))){ S.trendRange = el.dataset.r; renderTrend(); return; }
     if ((el = hit("#btnTheme"))){
       const nt = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
@@ -4465,10 +4678,16 @@ function wireEvents(){
     }
     if ((el = hit("[data-savepreset]"))){
       if (!S.mealDraft.items.length){ toast("先加点食物", "err"); return; }
-      const nm = prompt("给这个常吃组合起个名字", MEALS[S.pendingMeal.type].label + "套餐");
-      if (!nm) return;
-      S.presets.push({ name:nm, icon:"🍱", items:S.mealDraft.items.map(i => ({ name:i.lib || i.name, grams:i.grams })) });
-      saveLocal(); renderMealSheet(); toast("已存为常吃组合", "ok"); return;
+      // 不用 prompt()：iOS 独立 PWA 里原生弹窗会被屏蔽（点下去毫无反应），
+      // 而这会让「存为组合」整个废掉。改成先用默认名存下，
+      // 想改名去「餐食 › 常吃组合 › 改名」（内联输入，无需弹窗）。
+      const label = (MEALS[S.pendingMeal.type] || {}).label || "常吃";
+      let nm = label + "套餐", n = 2;
+      while (S.presets.some(x => x.name === nm)) nm = label + "套餐" + (n++);
+      S.presets.push({ id:uid(), name:nm, icon:"🍱",
+                       items:S.mealDraft.items.map(i => ({ name:i.lib || i.name, grams:i.grams })) });
+      saveLocal(); renderMealSheet(); renderMeals();
+      toast("已存为「" + nm + "」，可在「餐食」里改名", "ok"); return;
     }
 
     // 快速记录

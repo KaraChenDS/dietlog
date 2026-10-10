@@ -1,5 +1,5 @@
 /* 饮食记录 · 极简离线缓存：网络优先，跨域 API 不缓存 */
-const CACHE = "dietlog-v17";
+const CACHE = "dietlog-v19";
 const ASSETS = ["./", "./index.html", "./manifest.webmanifest",
                 "./icons/icon-192.png", "./icons/icon-512.png", "./icons/icon-180.png"];
 
