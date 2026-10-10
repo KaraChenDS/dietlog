@@ -342,6 +342,7 @@ button.stat:active{transform:scale(.97);border-color:var(--brand)}
 .sbar.ok{background:rgba(16,185,129,.10);border-color:rgba(16,185,129,.26);color:var(--brand)}
 .sbar.err{background:rgba(239,68,68,.10);border-color:rgba(239,68,68,.30);color:var(--danger)}
 .sbar.busy{background:var(--surface-2);border-color:var(--border);color:var(--muted)}
+.sbar.off{background:rgba(245,158,11,.10);border-color:rgba(245,158,11,.30);color:var(--warn)}
 pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radius:11px;padding:11px;
   font-size:11px;line-height:1.75;white-space:pre-wrap;word-break:break-word;margin-top:9px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--text-2)}
@@ -1049,7 +1050,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v1.6";
+const APP_VER = "v2.1";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -2541,7 +2542,8 @@ function renderSettings(){
     '</div>';
 
   // AI
-  const isCP = (ai.baseUrl || "").includes("codeplan") || ai.provider === "codeplan";
+  const presetKey = aiPresetKey();
+  const isCP = presetKey === "codeplan";
   h += '<div class="card"><div class="card-h"><h2>🤖 AI 识图</h2><span class="hint">' + (ai.key ? "已配置" : "未配置") + '</span></div>' +
     (isCP
       ? alertHtml("info", "⭐", "当前用的是你的 <b>coding plan</b>。把 plan 的 API Key 粘到下面即可，" +
@@ -2553,12 +2555,14 @@ function renderSettings(){
       (isCP ? "粘贴 coding plan 的 Key" : "sk-…") + '"></div>' +
     '<div class="grid2" style="margin-bottom:11px">' +
       '<div><label class="fl">服务商预设</label><select id="aiPreset">' +
-        '<option value="codeplan">⭐ coding plan（你的订阅）</option>' +
-        '<option value="deepseek">DeepSeek 官方 API</option>' +
-        '<option value="zhipu">智谱（免费）</option>' +
-        '<option value="qwen">通义千问</option>' +
-        '<option value="custom">自定义</option></select></div>' +
+        [["codeplan","⭐ coding plan（你的订阅）"],["deepseek","DeepSeek 官方 API"],
+         ["zhipu","智谱（免费）"],["qwen","通义千问"],["custom","自定义"]].map(o =>
+          '<option value="' + o[0] + '"' + (aiPresetKey() === o[0] ? " selected" : "") + '>' + o[1] + '</option>').join("") +
+        '</select></div>' +
       '<div><label class="fl">模型</label><input data-set="ai.model" value="' + esc(ai.model) + '"></div></div>' +
+    '<div class="xs muted" style="margin:-4px 0 10px 2px">当前服务商：<b>' +
+      esc(presetKey === "custom" ? "自定义" : (AI_PRESET[presetKey] ? presetKey : "?")) +
+      '</b>　端点：<span class="mono">' + esc(ai.baseUrl) + '</span></div>' +
     '<div><label class="fl">Base URL</label><input data-set="ai.baseUrl" value="' + esc(ai.baseUrl) + '"></div>' +
     (isCP ? '<div class="sec-title">coding plan 上支持图片的模型（点一下切换）</div>' +
       '<div class="chips">' + CODEPLAN_VISION_MODELS.map(m =>
@@ -3289,7 +3293,13 @@ function applySetting(el){
   if (path === "ai.key"){ /* 保持字符串 */ }
   saveLocal();
   if (path === "sync.token"){ renderSyncBar(); if (syncReady()) syncNow(true); return; }
-  if (path.startsWith("ai.") || path.startsWith("sync.")) { scheduleSync(); return; }
+  if (path.startsWith("ai.")){
+    // 重渲染让下拉框/横幅/端点提示立刻反映新值。这里挂在 change（已失焦）上，
+    // 所以重建 DOM 不会打断输入。
+    if (path === "ai.baseUrl") S.settings.ai.provider = "";
+    renderSettings(); scheduleSync(); return;
+  }
+  if (path.startsWith("sync.")) { scheduleSync(); return; }
   S.settings.syncTs = Date.now();    // 让「目标体重/速率」这类设置也能跨设备同步
   saveLocal(); scheduleSync();
   rollTDEE(); renderToday(); renderTop();
@@ -3331,7 +3341,11 @@ async function syncDiagnose(){
   const show = () => { out.innerHTML = '<pre class="diag">' + esc(log.join("\n")) + '</pre>'; };
   const add = (ok, t) => { log.push((ok === null ? "·" : ok ? "✅" : "❌") + " " + t); show(); };
   log.push("App 版本：" + APP_VER + "（构建于 " + APP_BUILD + "）");
-  log.push("仓库：" + cfg.owner + "/" + cfg.repo + "　文件：" + cfg.path); show();
+  log.push("仓库：" + cfg.owner + "/" + cfg.repo + "　文件：" + cfg.path);
+  log.push("本机：" + Object.keys(S.days).length + " 天　上次拉取：" +
+           (SY.lastPull ? relTime(SY.lastPull) : "从未") + "　上次推送：" +
+           (SY.lastPush ? relTime(SY.lastPush) : "从未"));
+  show();
   add(!!cfg.token, cfg.token ? "本机已保存令牌（" + cfg.token.slice(0, 8) + "…）" : "本机没有令牌，先在上面填入");
   if (!cfg.token) return;
   // 1) api.github.com 是否可达 —— 拿到任何 HTTP 响应都算通（403 通常是限流）
@@ -3348,7 +3362,17 @@ async function syncDiagnose(){
   // 3) 能否读到数据文件
   try {
     const r = await fetch(syncUrl(), { headers:syHeaders(cfg.token), cache:"no-store" });
-    if (r.status === 200){ const j = await r.json(); add(true, "数据文件存在，" + j.size + " 字节"); }
+    if (r.status === 200){
+      const j = await r.json();
+      let cd = "?";
+      try { cd = (JSON.parse(b64decode(j.content)).days || []).length; SY.cloudDays = cd; saveSyncStat(); } catch(e){}
+      add(true, "云端有 " + cd + " 天数据，" + j.size + " 字节");
+      const local = Object.keys(S.days).length;
+      if (cd !== "?" && cd > local)
+        add(false, "云端比本机多 " + (cd - local) + " 天 —— 点「立即同步」拉下来");
+      else if (cd !== "?" && cd < local)
+        add(true, "本机比云端多 " + (local - cd) + " 天 —— 点「立即同步」推上去");
+    }
     else if (r.status === 404){ add(true, "数据文件还不存在（首次同步时会自动创建）"); }
     else if (r.status === 403){ add(false, "读不到这个仓库（403）—— 令牌没勾中该仓库，或权限不足"); return; }
     else { add(false, "读仓库失败（HTTP " + r.status + "）"); return; }
@@ -3439,7 +3463,8 @@ async function importFile(file){
    ========================================================================================= */
 const SYNC_DEFAULTS = { owner:"KaraChenDS", repo:"dietlog-data", path:"dietlog.json" };
 const SYNC_STAT_KEY = "dietlog_syncstat_v1";
-const SY = { busy:false, timer:null, lastOk:0, lastErr:"" };
+const SY = { busy:false, timer:null, lastOk:0, lastErr:"",
+             lastPull:0, lastPush:0, cloudDays:null, localDays:null };
 
 /** 本地存了空串就回落到内置默认值（否则老用户的空配置会盖掉内置默认） */
 function syncCfg(){
@@ -3592,12 +3617,24 @@ async function mergeRemote(data){
 /* --- 状态记录：失败必须留下痕迹，不能静默 --- */
 function loadSyncStat(){
   try { const j = JSON.parse(localStorage.getItem(SYNC_STAT_KEY) || "{}");
-        SY.lastOk = j.t || 0; SY.lastErr = j.e || ""; } catch(e){}
+        SY.lastOk = j.t || 0; SY.lastErr = j.e || "";
+        SY.lastPull = j.p || 0; SY.lastPush = j.u || 0;
+        SY.cloudDays = (j.cd == null ? null : j.cd); } catch(e){}
 }
-function syncStat(ok, err){
-  if (ok){ SY.lastOk = Date.now(); SY.lastErr = ""; }
-  else if (err) SY.lastErr = err;
-  try { localStorage.setItem(SYNC_STAT_KEY, JSON.stringify({ t:SY.lastOk, e:SY.lastErr })); } catch(e){}
+function saveSyncStat(){
+  try { localStorage.setItem(SYNC_STAT_KEY, JSON.stringify(
+    { t:SY.lastOk, e:SY.lastErr, p:SY.lastPull, u:SY.lastPush, cd:SY.cloudDays })); } catch(e){}
+}
+/** kind: "pull" | "push" | "" —— 分别记录，这样才能看出是哪一头卡住了 */
+function syncStat(ok, err, kind){
+  const now = Date.now();
+  if (ok){
+    SY.lastOk = now; SY.lastErr = "";
+    if (kind === "pull") SY.lastPull = now;
+    if (kind === "push") SY.lastPush = now;
+  } else if (err) SY.lastErr = err;
+  SY.localDays = Object.keys(S.days).length;
+  saveSyncStat();
   renderSyncBar();
 }
 function relTime(ts){
@@ -3616,17 +3653,28 @@ function netMsg(e){
 }
 function renderSyncBar(){
   const el = $("#syncBar"); if (!el) return;
-  if (!syncReady()){ el.innerHTML = ""; el.style.display = "none"; return; }
   el.style.display = "";
+  if (!syncReady()){
+    // 没配令牌时必须显式说出来。以前这里是隐藏状态条，导致用户以为同步开着，
+    // 其实这台设备根本没在同步 —— 手机记的东西永远到不了这台机器。
+    el.innerHTML = '<button class="sbar off" data-syncsetup="1">' +
+      '☁️ 这台设备还没开启同步 · 点这里配置</button>';
+    return;
+  }
   if (SY.busy) el.innerHTML = '<div class="sbar busy"><span class="spin"></span> 正在同步…</div>';
   else if (SY.lastErr) el.innerHTML = '<button class="sbar err" data-syncrefresh="1">⚠️ 同步失败：' +
       esc(SY.lastErr) + ' · 点这里重试</button>';
-  else el.innerHTML = '<button class="sbar ok" data-syncrefresh="1">☁️ 已同步 · ' +
-      (SY.lastOk ? relTime(SY.lastOk) : "等待首次同步") + ' · 点这里立即刷新</button>';
+  else {
+    const cloud = (SY.cloudDays == null) ? "?" : SY.cloudDays;
+    const local = Object.keys(S.days).length;
+    const gap = (SY.cloudDays != null && SY.cloudDays > local) ? " ⚠️ 云端更多" : "";
+    el.innerHTML = '<button class="sbar ok" data-syncrefresh="1">☁️ 云端 ' + cloud + ' 天 · 本机 ' + local +
+      ' 天' + gap + '　·　' + (SY.lastOk ? relTime(SY.lastOk) : "等待首次同步") + ' · 点这里立即同步</button>';
+  }
 }
 
 /* --- 拉取 → 合并 → 必要时回写 --- */
-async function syncNow(silent){
+async function syncNowInner(silent){
   const cfg = syncCfg();
   if (!cfg.token){
     const msg = "还没填同步令牌 —— 在上面那个输入框粘贴后会自动开始同步";
@@ -3635,7 +3683,6 @@ async function syncNow(silent){
     if (o) o.innerHTML = alertHtml("warn", "🔑", msg);
     return { ok:false, why:"no-token" };
   }
-  if (SY.busy) return { ok:false, why:"busy" };
   SY.busy = true; renderSyncBar();
   const out = $("#syncOut");
   if (!silent && out) out.innerHTML = alertHtml("info", '<span class="spin"></span>', "正在同步…");
@@ -3644,7 +3691,8 @@ async function syncNow(silent){
     if (r.status === 404){
       SY.busy = false;
       await pushPayload(cfg, true);                 // 云端还没文件 → 用本机数据创建
-      syncStat(true);
+      SY.cloudDays = Object.keys(S.days).length;
+      syncStat(true, "", "pull");
       if (out) out.innerHTML = alertHtml("ok", "✅", "云端还没有数据文件，已用本机数据创建。");
       return { ok:true, created:true };
     }
@@ -3652,6 +3700,7 @@ async function syncNow(silent){
     if (r.status === 403) throw new Error("令牌权限不足或触发了限流（403）—— 需要 Contents: Read and write");
     if (!r.ok) throw new Error("HTTP " + r.status + " " + (await r.text()).slice(0, 160));
     const data = JSON.parse(b64decode((await r.json()).content));
+    SY.cloudDays = (data.days || []).length;
     const n = await mergeRemote(data);
     if (n){ rollTDEE(); saveLocal(); renderAll(); }
     // 合并后本机是两边的超集；若云端缺内容就回写，否则先于连接存在的本地数据永远上不去
@@ -3663,8 +3712,10 @@ async function syncNow(silent){
       return res;
     }
     SY.busy = false;
-    syncStat(true);
-    if (out) out.innerHTML = alertHtml("ok", "✅", n ? ("已合并 " + n + " 处更新。") : "已是最新，无需合并。");
+    syncStat(true, "", "pull");
+    if (out) out.innerHTML = alertHtml("ok", "✅",
+      "拉取完成：云端 " + SY.cloudDays + " 天，本机 " + Object.keys(S.days).length + " 天" +
+      (n ? ("，合并了 " + n + " 处更新。") : "，没有新内容。"));
     return { ok:true, merged:n };
   } catch(e){
     SY.busy = false;
@@ -3674,13 +3725,31 @@ async function syncNow(silent){
     return { ok:false, why:m };
   }
 }
+/* 并发调用时复用在跑的那一次。
+   以前是「已有同步就返回 busy」，于是用户点「立即同步」看起来毫无反应。 */
+let _syncInflight = null;
+async function syncNow(silent){
+  if (_syncInflight) return await _syncInflight;
+  _syncInflight = syncNowInner(silent);
+  try { return await _syncInflight; }
+  finally { _syncInflight = null; }
+}
+
 /** 只推送（不带 busy 守卫，供内部与「推送」按钮调用） */
 async function pushPayload(cfg, quiet){
   const out = $("#syncOut");
   try {
     let sha = null;
     const g = await fetch(syncUrl(), { headers:syHeaders(cfg.token), cache:"no-store" });
-    if (g.ok) sha = (await g.json()).sha;
+    if (g.ok){
+      const gj = await g.json();
+      sha = gj.sha;
+      // 内容没变就不推 —— 否则每改一次都留一个空提交，把版本历史淹掉
+      try {
+        if (payloadSig(JSON.parse(b64decode(gj.content))) === payloadSig(syncPayload()))
+          return { ok:true, unchanged:true };
+      } catch(e){}
+    }
     else if (g.status !== 404) throw new Error("HTTP " + g.status);
     const body = { message:"dietlog sync " + new Date().toISOString(),
                    content:b64encode(JSON.stringify(syncPayload())) };
@@ -3701,7 +3770,9 @@ async function pushPayload(cfg, quiet){
 }
 /** 自动同步：静默推送，失败不打扰但要留痕 */
 async function syncPushSilent(retry){
-  if (!syncReady() || SY.busy) return;
+  if (!syncReady()) return;
+  if (_syncInflight){ try { await _syncInflight; } catch(e){} }   // 等在跑的同步结束，别把这次推送吞掉
+  if (SY.busy) return;
   SY.busy = true; renderSyncBar();
   const cfg = syncCfg();
   let res = await pushPayload(cfg, true);
@@ -3711,14 +3782,18 @@ async function syncPushSilent(retry){
     return;
   }
   SY.busy = false;
-  syncStat(!!res.ok, res.ok ? "" : res.why);
+  syncStat(!!res.ok, res.ok ? "" : res.why, "push");
+  if (res.ok) SY.cloudDays = Object.keys(S.days).length;
+  saveSyncStat();
   const out = $("#syncOut");
-  if (out && res.ok) out.innerHTML = alertHtml("ok", "✅", "已推送到 " + cfg.owner + "/" + cfg.repo);
+  if (out && res.ok) out.innerHTML = alertHtml("ok", "✅",
+    res.unchanged ? "内容没变，无需推送。" :
+    ("已推送 " + Object.keys(S.days).length + " 天数据到 " + cfg.owner + "/" + cfg.repo));
 }
 function scheduleSync(){
   if (!syncReady()) return;
   clearTimeout(SY.timer);
-  SY.timer = setTimeout(() => { syncPushSilent(false); }, 2500);   // 防抖 2.5s
+  SY.timer = setTimeout(() => { syncPushSilent(false); }, 1200);   // 防抖 1.2s（关页面时还会立即补推）
 }
 /** 新设备一键连接：#t=<token>（用完立刻从地址栏抹掉） */
 function bootstrapTokenFromHash(){
@@ -3741,8 +3816,21 @@ function initAutoSync(){
   if (!syncReady()) return;
   setTimeout(() => syncNow(true), 700);            // 启动即静默拉取
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && syncReady()) syncNow(true);
+    if (!syncReady()) return;
+    if (document.visibilityState === "visible"){
+      syncNow(true);                                   // 切回来先拉一次
+    } else {
+      // 切走/锁屏时立刻把待推送的发出去 —— 否则 2.5s 防抖没到点，数据就永远留在手机上
+      if (SY.timer){ clearTimeout(SY.timer); SY.timer = null; syncPushSilent(false); }
+    }
   });
+  window.addEventListener("pagehide", () => {
+    if (syncReady() && SY.timer){ clearTimeout(SY.timer); SY.timer = null; syncPushSilent(false); }
+  });
+  // 页面一直开着也要定期拉：否则手机记的东西，电脑上永远看不到
+  setInterval(() => {
+    if (syncReady() && !SY.busy && document.visibilityState === "visible") syncNow(true);
+  }, 60000);
   window.addEventListener("online", () => { if (syncReady()) syncNow(true); });
   window.addEventListener("hashchange", () => {
     if (bootstrapTokenFromHash()){ renderSyncBar(); syncNow(true); }
@@ -3798,6 +3886,14 @@ const AI_PRESET = {
    glm-5.3-flashx 6s/729tok  ✅推荐   |  deepseek-v4-pro 7s/246tok 0项 ❌
    deepseek-v4.1-flash 27s/5126tok   |  ali/qwen3.8-flash 28s/2170tok
    xiaomi/mimo-v2.6-pro 43s/1830tok  */
+/** 当前配置对应哪个预设 —— 下拉框靠它决定显示哪一项。
+    以前没有这个判断，下拉框永远显示第一项，所以换过服务商也看不出变化。 */
+function aiPresetKey(){
+  const ai = (S.settings && S.settings.ai) || {};
+  const u = String(ai.baseUrl || "").replace(/\/+$/, "");
+  for (const k in AI_PRESET) if (AI_PRESET[k].baseUrl.replace(/\/+$/, "") === u) return k;
+  return "custom";
+}
 const CODEPLAN_VISION_MODELS = [
   "zhipu/glm-5.3-flashx", "ali/qwen3.8-flash", "deepseek/deepseek-v4.1-flash",
   "xiaomi/mimo-v2.6-pro", "deepseek/deepseek-v4-pro"
@@ -3973,6 +4069,11 @@ function wireEvents(){
       catch(err){ out.innerHTML = alertHtml("bad", "⚠️", "连接失败：" + esc(err.message)); }
       return;
     }
+    if ((el = hit("[data-syncsetup]"))){
+      switchView("settings");
+      setTimeout(() => { const t = $("#view-settings"); if (t) t.scrollIntoView({ block:"start", behavior:"smooth" }); }, 60);
+      return;
+    }
     if ((el = hit("#btnSyncNow")) || (el = hit("[data-syncrefresh]"))){ await syncNow(false); return; }
     if ((el = hit("#btnSyncDiag"))){ await syncDiagnose(); return; }
     if ((el = hit("#btnSyncHelp"))){ const o = $("#syncOut"); if (o) o.innerHTML = syncHelp(); return; }
@@ -4042,7 +4143,12 @@ function wireEvents(){
     if (t.dataset && t.dataset.set != null){ applySetting(t); return; }
     if (t.id === "aiPreset"){
       const p = AI_PRESET[t.value];
-      if (p){ S.settings.ai.baseUrl = p.baseUrl; S.settings.ai.model = p.model; saveLocal(); renderSettings(); }
+      if (p){
+        S.settings.ai.baseUrl = p.baseUrl;
+        S.settings.ai.model = p.model;
+        S.settings.ai.provider = t.value;          // 保持状态一致
+        saveLocal(); renderSettings();
+      }
       return;
     }
     if (t.id === "fileCam" || t.id === "fileImg"){ const f = t.files && t.files[0]; t.value = ""; handlePhoto(f); return; }
