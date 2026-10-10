@@ -685,9 +685,9 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
     <div class="sheet-b">
       <div class="grid2" id="quickGrid"></div>
       <div class="sec-title">文字快录</div>
-      <div class="small muted" style="margin-bottom:9px">直接写「食物 + 克数」，用空格或逗号分隔，例如：<br>
+      <div class="small muted" style="margin-bottom:9px">写克数用「按克数解析」；写整句描述用「AI 拆解」：<br>
         <span class="mono">米饭200 鸡胸150 西兰花100 牛奶250</span></div>
-      <textarea id="quickText" rows="3" placeholder="米饭200 鸡胸150 …"></textarea>
+      <textarea id="quickText" rows="3" placeholder="米饭200 鸡胸150 …&#10;或整句描述：清蒸鸡约150g+清蒸油麦菜约50g，米饭约50g"></textarea>
       <div class="btn-row" style="margin-top:11px">
         <select id="quickMeal" style="flex:0 0 118px">
           <option value="breakfast">早餐</option>
@@ -695,7 +695,8 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
           <option value="dinner">晚餐</option>
           <option value="snack">加餐</option>
         </select>
-        <button class="btn primary" id="btnQuickParse">解析并添加</button>
+        <button class="btn" id="btnQuickParse">按克数解析</button>
+        <button class="btn primary" id="btnAiText">🤖 AI 拆解</button>
       </div>
       <div id="quickResult"></div>
     </div>
@@ -1098,7 +1099,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v3.2";
+const APP_VER = "v3.4";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -1791,6 +1792,35 @@ __ITEMS__
 {"items":[{"name":"清蒸牛肉丸和西兰花","grams":250,"cooking":"清蒸","kcal":0,"protein":0,"carbs":0,"fat":0,"sodium":0,"fiber":0,"confidence":0.9}],
  "note":"一句话说明改了什么"}
 `;
+
+/* 文本描述的 AI 拆解。用户会写「约150g」这种近似值，也会写没进食物库的叫法，
+   所以本地的正则解析办不到 —— 交给模型，再拿结果去命中食物库。 */
+const PROMPT_TEXT_MEAL = `你是专业营养师。用户用一句话描述了他吃的东西：
+「__DESC__」
+
+请把它拆解成具体食物条目，估算重量与营养。只输出 JSON，不要任何解释文字：
+{"items":[{"name":"清蒸鸡","grams":150,"cooking":"清蒸","portion":"约一个手掌大","kcal":165,"protein":31,"carbs":0,"fat":3.6,"sodium":74,"fiber":0,"confidence":0.8}],"note":""}
+
+【拆解要求】
+1. 复合描述要拆成独立条目。"清蒸鸡约150g+清蒸油麦菜约50g，米饭约50g" → 三条。
+2. 用户写了克数就用他的数字（"约150g" → 150）；没写才按常识估。别把整句的总量当成单项。
+3. name 用中国人最常用的叫法；**做法写进 cooking 字段，不要混进 name**。
+4. 用户说了做法就按那个做法算油盐：清蒸/水煮/凉拌**不计烹调用油**、钠按食材本底；
+   炒/煎/炸要计入用油和盐。没说做法时按该菜最常见做法估。
+5. 营养值按 grams 的**总量**计算，不是每 100g。
+6. 单位：kcal 千卡；protein/carbs/fat/fiber 克；sodium 毫克。
+7. confidence 要诚实，把握不大就在 name 后加"（估）"。
+8. 描述里没有食物就返回 {"items":[],"note":"没看懂"}`;
+
+async function analyzeMealText(desc){
+  const txt = await aiCall([{ role:"user", content:[
+    { type:"text", text:PROMPT_TEXT_MEAL.replace("__DESC__", String(desc).replace(/["\\]/g, " ")) }
+  ]}]);
+  const j = extractJson(txt);
+  if (!j) throw new Error("模型没有返回可解析的 JSON");
+  const raw = Array.isArray(j) ? j : (j.items || []);
+  return { items:raw.map(mapAiItem).filter(x => x.name && x.kcal >= 0), note:String(j.note || "").trim() };
+}
 
 async function analyzeMealPhoto(dataUrl){
   const txt = await aiCall([{ role:"user", content:[
@@ -3104,6 +3134,43 @@ async function refineMeal(desc){
   return { items:raw.map(mapAiItem), note:String(j.note || "").trim() };
 }
 
+/** AI 给出的条目 → 尽量命中内置食物库（库里的营养值更可信）→ 推进当前草稿。
+    识图与「文本 AI 拆解」共用这一套，保证两条路的质量一致。 */
+/* AI 常把做法留在名字里（"清蒸鸡"、"清炒西兰花"），而库里存的是食材名
+   （"鸡腿肉(去皮)"、"西兰花"），带着做法前缀就匹配不上。
+   所以匹配时试两种写法，取分高的那个。*/
+const COOK_PREFIX = /^(清蒸|粉蒸|水煮|白灼|清炒|小炒|爆炒|快炒|干煸|香煎|煎|油炸|炸|气炸|空气炸|烤|炭烤|凉拌|红烧|卤|酱|炖|焖|烩|扒|焗|蒸|煮|炒|拌)/;
+function stripCooking(nm){
+  const t = String(nm || "").replace(COOK_PREFIX, "").trim();
+  return t.length >= 1 ? t : nm;
+}
+/** 匹配食物库：原名与「剥掉做法前缀」各试一次，取分高的 */
+function matchFoodSmart(nm){
+  const a = matchFood(nm);
+  const b = matchFood(stripCooking(nm));
+  if (a && b) return b.score > a.score ? b : a;
+  return a || b;
+}
+
+function pushRecognized(items){
+  const dr = S.mealDraft;
+  let libHit = 0;
+  for (const it of items){
+    const hit = matchFoodSmart(it.name);
+    if (hit && hit.score >= 0.8 && !/（估）/.test(it.name)){
+      it.ref = { kcal:hit.food.kcal, p:hit.food.p, c:hit.food.c, f:hit.food.f, na:hit.food.na, fib:hit.food.fib };
+      it.lib = hit.food.name; it.src = "db"; it.u = hit.food.u || it.u || "g"; libHit++;
+      applyGrams(it, it.grams);
+    } else {
+      it.ref = refFromItem(it);
+      it.src = "ai";
+      if (hit && hit.score >= 0.6) it.lib = hit.food.name;
+    }
+    dr.items.push(it);
+  }
+  return libHit;
+}
+
 async function doRecognize(dataUrl, thumb){
   const dr = S.mealDraft;
   S.mealMsg = alertHtml("info", '<span class="spin"></span>', "正在识别这餐食物…");
@@ -3111,20 +3178,8 @@ async function doRecognize(dataUrl, thumb){
   try {
     const items = await analyzeMealPhoto(dataUrl);
     if (!items.length){ S.mealMsg = alertHtml("warn", "🤔", "没识别到食物，换个角度或光线再试，也可以手动添加。"); renderMealSheet(); return; }
-    let libHit = 0;
-    for (const it of items){
-      const hit = matchFood(it.name);
-      if (hit && hit.score >= 0.8 && !/（估）/.test(it.name)){
-        it.ref = { kcal:hit.food.kcal, p:hit.food.p, c:hit.food.c, f:hit.food.f, na:hit.food.na, fib:hit.food.fib };
-        it.lib = hit.food.name; it.src = "db"; it.u = hit.food.u || it.u || "g"; libHit++;
-        applyGrams(it, it.grams);
-      } else {
-        it.ref = refFromItem(it);
-        it.src = "ai";
-        if (hit && hit.score >= 0.6) it.lib = hit.food.name;
-      }
-      dr.items.push(it);
-    }
+    pushRecognized(items);
+    const libHit = items.filter(i => i.lib).length;
     if (thumb) dr.photo = thumb;
     S.mealMsg = alertHtml("ok", "✅", "识别到 <b>" + items.length + "</b> 项，其中 <b>" + libHit +
       "</b> 项命中内置食物库。<b>请核对克数</b>——AI 对份量的估算误差最大。");
@@ -3312,6 +3367,35 @@ function openQuick(){
     '<div class="l">' + a[1] + '</div><div class="v" style="font-size:14px">' + a[2] + '</div></button>').join("");
   $("#quickText").value = ""; $("#quickResult").innerHTML = "";
   openSheet("sheetQuick");
+}
+async function aiParseText(){
+  const text = $("#quickText").value.trim();
+  if (!text){ toast("先写点东西", "err"); return; }
+  if (!aiReady()){ toast("还没配 AI 密钥，去「设置 › AI 识图」填一下", "err"); return; }
+  const type = $("#quickMeal").value;
+  const box = $("#quickResult");
+  box.innerHTML = alertHtml("info", '<span class="spin"></span>', "正在让 AI 拆解这句话…");
+  try {
+    const r = await analyzeMealText(text);
+    if (!r.items.length) throw new Error(r.note || "没看懂这句话");
+    S.pendingMeal = { date:today(), type };
+    if (!S.mealDraft || !S.mealDraft.items) S.mealDraft = { type, at:"", items:[], photo:null };
+    S.mealDraft.type = type;
+    pushRecognized(r.items);
+    const libHit = r.items.filter(i => i.lib).length;
+    const rows = r.items.map(i =>
+      '<div class="sl-item" style="cursor:default"><div class="nm">' + esc(i.name) +
+      (i.cooking ? ' <span class="muted">· ' + esc(i.cooking) + '</span>' : '') + '</div>' +
+      '<div class="kc" style="max-width:56%">' + i.grams + (i.u === "ml" ? "ml" : "g") + ' · ' +
+      Math.round(i.kcal) + ' kcal' + (i.lib ? ' <span style="color:var(--brand)">库</span>' : '') + '</div></div>').join("");
+    box.innerHTML = alertHtml("ok", "✅", "拆出 <b>" + r.items.length + "</b> 项，其中 <b>" + libHit +
+      "</b> 项命中食物库。" + (r.note ? "<br><span class='xs muted'>" + esc(r.note) + "</span>" : "")) +
+      '<div class="search-list" style="max-height:200px">' + rows + '</div>';
+    $("#quickText").value = "";
+    toast("已加入 " + r.items.length + " 项", "ok");
+  } catch(e){
+    box.innerHTML = alertHtml("bad", "⚠️", "AI 拆解失败：" + esc(e.message));
+  }
 }
 function quickParse(){
   const text = $("#quickText").value.trim();
@@ -4382,6 +4466,7 @@ function wireEvents(){
       return;
     }
     if ((el = hit("#btnQuickParse"))){ quickParse(); return; }
+    if ((el = hit("#btnAiText"))){ await aiParseText(); return; }
 
     // 体成分
     if ((el = hit("#btnAddBc"))){ openBc(null); return; }
