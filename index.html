@@ -1122,7 +1122,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v6.4";
+const APP_VER = "v6.5";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -2601,14 +2601,11 @@ function exerciseCard(date){
   const isT = date === today();
   const bonus = ex ? exerciseBonus(date) : 0;
   const frac = exerciseFraction();
-  let h = '<div class="card"><div class="card-h"><h2>🏋️ 今日运动</h2><span class="hint">' +
-    (ex ? (ex.min + " 分钟") : "未记录") + '</span></div>';
-
+  // 过去的日子也要能补记 —— 练完隔天才想起来是常事。
+  let h = '<div class="card"><div class="card-h"><h2>' + (isT ? "🏋️ 今日运动" : "🏋️ 这天的运动") +
+    '</h2><span class="hint">' + (ex ? (ex.min + " 分钟") : "未记录") + '</span></div>';
   if (!isT){
-    h += '<div class="small muted">' + (ex
-      ? esc(ex.label) + ' ' + ex.min + ' 分钟 · 当天补了 <b>' + bonus + ' kcal</b>'
-      : "这天没有运动记录。") + '</div></div>';
-    return h;
+    h += '<div class="xs muted" style="margin-bottom:9px">补记这一天的运动，当天的摄入目标会跟着上调。</div>';
   }
 
   h += '<div class="grid2" style="gap:8px">' +
@@ -2621,12 +2618,13 @@ function exerciseCard(date){
       (ex ? ex.min : "") + '" placeholder="例如 45"></div></div>';
 
   if (ex){
-    h += '<div class="exnote">今天补充了 <b>+' + bonus + ' kcal</b> 到目标摄入' +
+    h += '<div class="exnote">' + (isT ? "今天" : "这天") + '补充了 <b>+' + bonus + ' kcal</b> 到目标摄入' +
       (frac > 0 && frac < 1 ? '（补一半，另一半已经摊在你长期的平均消耗里了）' : '') + '。</div>';
   } else {
     h += '<div class="xs muted" style="margin-top:9px;line-height:1.7">' +
       '练了就在这里记一笔。App 会算出当天的额外消耗，' +
-      '并按固定比例补一部分到今天的摄入目标 —— 训练日不用硬扛着不吃。</div>';
+      '并按固定比例补一部分到当天的摄入目标 —— 训练日不用硬扛着不吃。' +
+      (isT ? '' : '<br>补记过去的运动也可以，目标会按那天重算。') + '</div>';
   }
   h += '</div>';
   return h;
