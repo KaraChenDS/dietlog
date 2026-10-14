@@ -356,6 +356,9 @@ details.card.fold[open]>summary:hover{background:transparent}
 /* 补充描述：AI 最容易错的是做法与油盐，给一个说人话的修正入口 */
 /* 组合的内联编辑区（不用 prompt/confirm：iOS PWA 里不可靠） */
 /* 新建组合里的「已选食物」一行 */
+/* 练后加餐额度的说明行 */
+.exnote{margin-top:10px;padding:9px 11px;border-radius:10px;font-size:11.5px;line-height:1.7;
+  background:var(--brand-soft);color:var(--brand);font-weight:600}
 .brow{display:flex;align-items:center;gap:7px;padding:6px 0;border-bottom:1px solid var(--border)}
 .brow:last-child{border-bottom:none}
 .brow .bn{flex:1;min-width:0;font-size:12.5px;font-weight:650;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -1101,6 +1104,8 @@ const DEFAULT_SETTINGS = {
   // key 只存本机 localStorage，绝不写进代码、导出或同步载荷。
   ai:{ provider:"codeplan", baseUrl:"https://ai-kas.kso.net/codeplan/v1",
        model:"zhipu/glm-5.3-flashx", key:"" },
+  exerciseMode:"auto",  // 练后加餐策略：auto(补一半) / none / custom
+  exercisePct:50,
   avoid:[],          // 忌口食物名清单（从食物库勾选）
   like:[],           // 喜好的食物名清单 —— 替补时优先从这里选
   // 只内置 owner/repo/path，绝不内置 token：公开页面无法安全持有密钥。
@@ -1117,7 +1122,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v5.2";
+const APP_VER = "v6.4";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -1272,14 +1277,16 @@ async function loadAll(){
 /* --- 日记录 --- */
 function getDay(date, create){
   if (!S.days[date] && create)
-    S.days[date] = { date, morning:null, evening:null, meals:[], note:"", k:date };
+    S.days[date] = { date, morning:null, evening:null, meals:[], note:"", exercise:null, k:date };
   return S.days[date];
 }
 async function putDay(date){
   const d = S.days[date];
   if (!d) return;
   d.k = date;
-  const empty = !d.morning && !d.evening && !(d.meals || []).length && !d.note;
+  // 「空天」判断必须覆盖所有会单独存在的字段。漏了 exercise 的后果是：
+  // 只记了运动的一天会被当成空，直接删掉，运动记录凭空消失。
+  const empty = !d.morning && !d.evening && !(d.meals || []).length && !d.note && !d.exercise;
   if (empty) { delete S.days[date]; await IDB.del("days", date); }
   else await IDB.put("days", date, d);
   markDirty();
@@ -1458,15 +1465,55 @@ function effectiveTDEE(){
 }
 
 /** 目标：热量 + 三大宏量 + 钠 + 纤维 */
-function computeTargets(){
+/* ---------- 运动的练后加餐额度 ----------
+   为什么不能把运动消耗全额补回：
+   TDEE 是从 21 天体重斜率反推的，它**已经包含了你平均每周的训练消耗**。
+   训练日再把单次消耗全额加回，等于同一笔消耗算两次，实际缺口会被抹平。
+   所以只补一部分 —— 这是引擎的营养策略，不是留给用户猜的参数。 */
+const EX_FRACTION = 0.5;
+
+/* MET 取自《体力活动概要》(Compendium of Physical Activities) 的通行值 */
+const MET_TABLE = [
+  ["力量训练（自由重量 / 器械）", 4.5],
+  ["功能性训练 / 循环", 5.0],
+  ["骑行（12–16 km/h）", 6.8],
+  ["慢跑", 7.0],
+  ["快走", 4.3],
+  ["瑜伽 / 拉伸", 2.5]
+];
+/** 净消耗 = (MET − 1) × 体重 × 时长h × 1.05
+    MET=1 是安静坐着的基础消耗，那部分不管练不练都会烧掉、且已含在 TDEE 里，
+    所以要扣掉，否则连安静代谢都重复计一遍。1.05 是 MET→kcal 的标准换算系数。 */
+function exNetKcal(met, min, kg){
+  return (met - 1) * (kg || currentWeight()) * (min / 60) * 1.05;
+}
+/** 补回比例：默认走引擎策略；设置页高级区可以覆盖成「不补」或自定义 */
+function exerciseFraction(){
+  const m = S.settings.exerciseMode || "auto";
+  if (m === "none") return 0;
+  if (m === "custom") return clamp(num(S.settings.exercisePct != null ? S.settings.exercisePct : 50), 0, 100) / 100;
+  return EX_FRACTION;
+}
+/** 某天的练后加餐额度（kcal）。没记运动就是 0。 */
+function exerciseBonus(date){
+  const ex = date && S.days[date] && S.days[date].exercise;
+  if (!ex || !ex.met || !ex.min) return 0;
+  return Math.round(exNetKcal(ex.met, ex.min) * exerciseFraction());
+}
+
+/** 目标摄入。传日期时会把这天记的运动折算成练后加餐额度加进去；
+    不传日期返回的是「基础目标」，便于展示拆解。 */
+function computeTargets(date){
   const t = effectiveTDEE(), w = currentWeight();
   const deficit = S.settings.ratePerWeek * KCAL_PER_KG / 7;
-  const kcal = Math.round(t.value - deficit);
+  const baseKcal = Math.round(t.value - deficit);
+  const bonus = date ? exerciseBonus(date) : 0;
+  const kcal = baseKcal + bonus;
   const protein = Math.round(S.settings.proteinPerKg * w);
   const fat = Math.round(S.settings.fatPerKg * w);
   const carbKcal = kcal - protein * 4 - fat * 9;
   const carbs = Math.max(0, Math.round(carbKcal / 4));
-  return { kcal, protein, carbs, fat,
+  return { kcal, baseKcal, exerciseBonus:bonus, protein, carbs, fat,
            sodium:S.settings.sodiumTarget, fiber:S.settings.fiberTarget,
            tdee:t.value, tdeeSource:t.source, deficit:Math.round(deficit),
            weight:r1(w), feasible: carbKcal > 0 };
@@ -1534,7 +1581,7 @@ function bcDeltas(){
 
 /** 所有安全护栏与告警 */
 function warnings(){
-  const out = [], p = S.settings.profile, tg = computeTargets();
+  const out = [], p = S.settings.profile, tg = computeTargets(today());
   const t = effectiveTDEE(), b = bmrInfo(), bw = currentWeight();
   const pct = S.settings.ratePerWeek / bw * 100;
 
@@ -2453,7 +2500,7 @@ function pendingMeals(d){
 }
 /** 生成当日方案：把剩余额度按各餐模板的基准热量占比分下去 */
 function dayPlan(date){
-  const d = S.days[date], tg = computeTargets(), m = dayMacros(d);
+  const d = S.days[date], tg = computeTargets(date), m = dayMacros(d);
   const rem = Math.max(0, tg.kcal - m.kcal);
   const pend = pendingMeals(d);
   if (!pend.length || rem < 150) return null;
@@ -2547,9 +2594,47 @@ function eatPlanCard(date, tg, m){
   return h + '</div>';
 }
 
+/** 今日运动：记了才会给练后加餐额度。界面只说「后果」，不解释公式。 */
+function exerciseCard(date){
+  const d = S.days[date] || {};
+  const ex = d.exercise || null;
+  const isT = date === today();
+  const bonus = ex ? exerciseBonus(date) : 0;
+  const frac = exerciseFraction();
+  let h = '<div class="card"><div class="card-h"><h2>🏋️ 今日运动</h2><span class="hint">' +
+    (ex ? (ex.min + " 分钟") : "未记录") + '</span></div>';
+
+  if (!isT){
+    h += '<div class="small muted">' + (ex
+      ? esc(ex.label) + ' ' + ex.min + ' 分钟 · 当天补了 <b>' + bonus + ' kcal</b>'
+      : "这天没有运动记录。") + '</div></div>';
+    return h;
+  }
+
+  h += '<div class="grid2" style="gap:8px">' +
+    '<div><label class="fl">类型</label><select data-exfield="met">' +
+      '<option value="">没有运动</option>' +
+      MET_TABLE.map(m => '<option value="' + m[1] + '"' +
+        (ex && ex.met === m[1] ? " selected" : "") + '>' + esc(m[0]) + '</option>').join("") +
+    '</select></div>' +
+    '<div><label class="fl">时长 分钟</label><input type="number" inputmode="numeric" data-exfield="min" value="' +
+      (ex ? ex.min : "") + '" placeholder="例如 45"></div></div>';
+
+  if (ex){
+    h += '<div class="exnote">今天补充了 <b>+' + bonus + ' kcal</b> 到目标摄入' +
+      (frac > 0 && frac < 1 ? '（补一半，另一半已经摊在你长期的平均消耗里了）' : '') + '。</div>';
+  } else {
+    h += '<div class="xs muted" style="margin-top:9px;line-height:1.7">' +
+      '练了就在这里记一笔。App 会算出当天的额外消耗，' +
+      '并按固定比例补一部分到今天的摄入目标 —— 训练日不用硬扛着不吃。</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
 function renderToday(){
   const date = S.date, d = S.days[date];
-  const tg = computeTargets(), m = dayMacros(d), t = effectiveTDEE();
+  const tg = computeTargets(date), m = dayMacros(d), t = effectiveTDEE();
   renderTop();   // 顶栏也跟着刷新，避免局部重渲染后顶部数字变陈旧
   $('#dLabel').textContent = fullDate(date);
   const isT = date === today();
@@ -2568,13 +2653,23 @@ function renderToday(){
   let h = '';
   h += '<div class="card"><div class="hero">' + kcalRing(m.kcal, tg.kcal) +
     '<div class="hero-stats">' +
-      '<div class="kv"><span class="k">目标摄入</span><span class="v">' + tg.kcal + '<small>kcal</small></span></div>' +
+      '<div class="kv"><span class="k">目标摄入</span><span class="v">' + tg.kcal + '<small>kcal</small></span>' +
+        (tg.exerciseBonus ? '<span class="xs" style="color:var(--brand);font-weight:650">基础 ' + tg.baseKcal +
+          ' + 练后 ' + tg.exerciseBonus + '</span>' : '') + '</div>' +
       '<div class="kv"><span class="k">今日缺口</span><span class="v" style="color:' + (deficitNow >= 0 ? "var(--brand)" : "var(--danger)") + '">' +
         (deficitNow >= 0 ? "" : "+") + (-deficitNow) + '<small>kcal</small></span></div>' +
       '<div class="kv"><span class="k">' + (t.source === "measured" ? "实测 TDEE" : t.source === "manual" ? "手填 TDEE" : "公式 TDEE") + '</span>' +
         '<span class="v">' + t.value + '<small>kcal</small></span></div>' +
       '<div class="kv"><span class="k">趋势体重</span><span class="v">' + fw(currentTrendWeight()) + '<small>kg</small></span></div>' +
     '</div></div>';
+  // 训练日把「为什么今天能多吃」写清楚：只说后果，不摊公式
+  if (tg.exerciseBonus && d && d.exercise){
+    h += '<div class="alert info" style="margin:13px 0 0"><span class="ai">🏋️</span><div>' +
+      '<b>' + esc(d.exercise.label) + ' ' + d.exercise.min + ' 分钟 → 今天可多吃 ' + tg.exerciseBonus + ' kcal</b>' +
+      '今天的目标摄入从 ' + tg.baseKcal + ' 提到了 ' + tg.kcal + ' kcal。' +
+      '只补了一部分——另一半已经摊在你长期的平均消耗里了，全补回来的话实际缺口就被抹平了。' +
+      '</div></div>';
+  }
   if (proj.done){
     h += '<div class="alert ok" style="margin:13px 0 0"><span class="ai">🎉</span><div><b>已达成目标体重</b>当前趋势体重 ' + proj.cw + ' kg ≤ 目标 ' + proj.gw + ' kg。接下来建议把主轴换成体脂率与去脂体重。</div></div>';
   } else {
@@ -2595,6 +2690,7 @@ function renderToday(){
     '</div>';
 
   h += weightPanel(date);
+  h += exerciseCard(date);
   h += '<div class="card"><div class="card-h"><h2>🍽️ 今日三餐</h2><span class="hint">点 ＋ 拍照或手动添加</span></div>';
   for (const type of ["breakfast", "lunch", "dinner", "snack"]) h += mealSection(date, type);
   h += '</div>';
@@ -2890,7 +2986,7 @@ function renderTrend(){
   $('#trendBody').innerHTML = h;
 }
 function renderTrendDay(){
-  const date = today(), d = S.days[date], tg = computeTargets(), m = dayMacros(d), t = effectiveTDEE();
+  const date = today(), d = S.days[date], tg = computeTargets(date), m = dayMacros(d), t = effectiveTDEE();
   let h = '<div class="grid2" style="margin-bottom:12px">' +
     statCard("今日摄入", Math.round(m.kcal), "kcal", tg.kcal + " 目标") +
     statCard("今日缺口", Math.round(t.value - m.kcal), "kcal", "目标 " + tg.deficit) + '</div>';
@@ -3030,7 +3126,7 @@ function renderBody(){
 /* ---------------------------- 设置 ---------------------------- */
 function renderSettings(){
   const p = S.settings.profile, ai = S.settings.ai, sy = S.settings.sync;
-  const t = effectiveTDEE(), tg = computeTargets(), b = bmrInfo();
+  const t = effectiveTDEE(), tg = computeTargets(today()), b = bmrInfo();
   const k = eveningMorningK(), se = sodiumEffect(), m = estimateTDEE();
 
   let h = '';
@@ -3108,6 +3204,22 @@ function renderSettings(){
         '<div><label class="fl">纤维 g</label><input type="number" step="1" min="10" max="50" data-set="fiberTarget" value="' + S.settings.fiberTarget + '"></div>' +
         '<div><label class="fl">手填 TDEE（留空=自动）</label><input type="number" step="10" min="800" max="6000" data-set="manualTDEE" value="' + (S.settings.manualTDEE || "") + '" placeholder="自动"></div></div>' +
       '<div class="xs muted" style="margin-top:9px">钠控制得稳，你的体重读数才可信 —— 钠超标会让次日晨重虚高。</div>' +
+      '<div class="sec-title" style="margin-top:13px">练后加餐策略</div>' +
+      '<select data-set="exerciseMode">' +
+        [["auto","自动（推荐）—— 补充一半，兼顾恢复与减脂进度"],
+         ["none","不补 —— 训练日照常吃基础目标"],
+         ["custom","自定义比例"]].map(o => '<option value="' + o[0] + '"' +
+          ((S.settings.exerciseMode || "auto") === o[0] ? " selected" : "") + '>' + o[1] + '</option>').join("") +
+      '</select>' +
+      (S.settings.exerciseMode === "custom"
+        ? '<div style="margin-top:9px"><label class="fl">补回比例 %</label>' +
+          '<input type="number" step="10" min="0" max="100" data-set="exercisePct" value="' +
+          (S.settings.exercisePct != null ? S.settings.exercisePct : 50) + '"></div>'
+        : '') +
+      '<div class="xs muted" style="margin-top:9px;line-height:1.7">' +
+        '为什么默认只补一半：你的 TDEE 是从 21 天体重斜率反推的，' +
+        '<b>已经包含了你平均每周的训练消耗</b>。训练日全额补回等于同一笔消耗算两次，' +
+        '实际缺口会被抹平。所以补一半，既支持恢复，又不吃掉进度。</div>' +
     '</details>',
     false);
 
@@ -3280,7 +3392,7 @@ function mealTotalHtml(){
   if (!dr || !dr.items.length) return "";
   const tot = dr.items.reduce((a, i) => ({ kcal:a.kcal + i.kcal, p:a.p + i.p, c:a.c + i.c, f:a.f + i.f, na:a.na + i.na }),
                               { kcal:0, p:0, c:0, f:0, na:0 });
-  const tg = computeTargets();
+  const tg = computeTargets((S.pendingMeal && S.pendingMeal.date) || S.date || today());
   return '<div class="stat" style="margin-top:10px"><div class="l">本餐合计</div>' +
     '<div class="v">' + Math.round(tot.kcal) + '<small>kcal</small></div>' +
     '<div class="d">蛋白 ' + tot.p.toFixed(1) + 'g · 碳水 ' + tot.c.toFixed(1) + 'g · 脂肪 ' + tot.f.toFixed(1) +
@@ -3937,7 +4049,7 @@ function setPath(obj, path, val){ const ks = path.split("."); let o = obj; for (
 /* 即使允许手填，也设不成有害的值 */
 const SET_BOUNDS = { proteinPerKg:[1.2,3.0], fatPerKg:[0.5,1.5],
                      sodiumTarget:[1000,3500], fiberTarget:[10,50],
-                     manualTDEE:[800,6000], ratePerWeek:[0.1,1.2] };
+                     manualTDEE:[800,6000], ratePerWeek:[0.1,1.2], exercisePct:[0,100] };
 function applySetting(el){
   const path = el.dataset.set;
   let v = el.value;
@@ -3953,6 +4065,7 @@ function applySetting(el){
   if (path === "ai.key"){ /* 保持字符串 */ }
   saveLocal();
   if (path === "sync.token"){ renderSyncBar(); if (syncReady()) syncNow(true); return; }
+  if (path === "exerciseMode"){ renderSettings(); renderToday(); renderTop(); rollTDEE(); scheduleSync(); return; }
   if (path.startsWith("ai.")){
     // 重渲染让下拉框/横幅/端点提示立刻反映新值。这里挂在 change（已失焦）上，
     // 所以重建 DOM 不会打断输入。
@@ -4184,8 +4297,11 @@ function b64decode(s){
 const SYNC_SETTINGS_KEYS = ["profile","ratePerWeek","proteinPerKg","fatPerKg",
                             "sodiumTarget","fiberTarget","manualTDEE"];
 function shrinkDay(d){
+  // 白名单式归一化：新增字段必须显式加进来，否则一存取就被丢掉。
+  // exercise 就是这么被漏过一次 —— 界面能记，但存下去就没了。
   return { date:d.date, morning:d.morning || null, evening:d.evening || null,
-           meals:d.meals || [], note:d.note || "", t:d.t || {} };
+           meals:d.meals || [], note:d.note || "", exercise:d.exercise || null,
+           t:d.t || {} };
 }
 function syncPayload(){
   const st = S.settings, o = {};
@@ -4206,7 +4322,7 @@ function payloadSig(p){
 }
 
 /* --- 分层合并 --- */
-const SY_FIELDS = ["morning","evening","note"];
+const SY_FIELDS = ["morning","evening","note","exercise"];   // 新增按时间戳合并的字段要加进来
 /** 取较新的一侧；时间戳相同时优先非空，避免把已有内容抹成空 */
 function pickNewer(lv, rv, lt, rt){
   lt = lt || 0; rt = rt || 0;
@@ -5002,6 +5118,25 @@ function wireEvents(){
         renderMeals();
       }
       return;
+    }
+    if (t.dataset && t.dataset.exfield != null){
+      const date = S.date || today();
+      const d = getDay(date, true);
+      const f = t.dataset.exfield;
+      if (f === "met"){
+        const met = num(t.value);
+        if (!met){ delete d.exercise; }               // 选「没有运动」就清掉
+        else {
+          const row = MET_TABLE.find(m => m[1] === met);
+          d.exercise = Object.assign({}, d.exercise, { met, label:(row ? row[0] : "运动"), min:(d.exercise && d.exercise.min) || 45 });
+        }
+      } else if (f === "min"){
+        const min = num(t.value);
+        if (d.exercise) d.exercise.min = min > 0 ? Math.min(600, Math.round(min)) : 45;
+        else if (min > 0) d.exercise = { met:MET_TABLE[0][1], label:MET_TABLE[0][0], min:Math.min(600, Math.round(min)) };
+      }
+      d.t = d.t || {}; d.t.exercise = Date.now();
+      putDay(date); markDirty(); renderToday(); renderTop(); return;
     }
     if (t.dataset && t.dataset.set != null){ applySetting(t); return; }
     if (t.id === "aiPreset"){
