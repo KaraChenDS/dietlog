@@ -3829,21 +3829,41 @@ async function aiParseText(){
   try {
     const r = await analyzeMealText(text);
     if (!r.items.length) throw new Error(r.note || "没看懂这句话");
-    S.pendingMeal = { date:today(), type };
-    if (!S.mealDraft || !S.mealDraft.items) S.mealDraft = { type, at:"", items:[], photo:null };
-    S.mealDraft.type = type;
-    pushRecognized(r.items);
-    const libHit = r.items.filter(i => i.lib).length;
+    // 与「按克数解析」走同一条落库路径：AI 拆解的结果必须真的进到当天的餐次里。
+    // 之前只 push 进草稿既没持久化也没打开面板 —— 快捷面板一关，结果就凭空消失。
+    const final = [];
+    for (const it of r.items){
+      const hit = matchFoodSmart(it.name);
+      if (hit && hit.score >= 0.8 && !/（估）/.test(it.name)){
+        it.ref = { kcal:hit.food.kcal, p:hit.food.p, c:hit.food.c, f:hit.food.f, na:hit.food.na, fib:hit.food.fib };
+        it.lib = hit.food.name; it.src = "db"; it.u = hit.food.u || it.u || "g";
+        applyGrams(it, it.grams);
+      } else {
+        it.ref = refFromItem(it);
+        it.src = "ai";
+        if (hit && hit.score >= 0.6) it.lib = hit.food.name;
+      }
+      final.push(it);
+    }
+    const d = getDay(today(), true);
+    d.meals = d.meals || [];
+    let meal = d.meals.find(m => m.type === type);
+    if (!meal){ meal = { type, at:timeHM(new Date()), items:[] }; d.meals.push(meal); }
+    meal.items.push(...final);
+    await putDay(today());
+    const libHit = final.filter(i => i.lib).length;
     const rows = r.items.map(i =>
       '<div class="sl-item" style="cursor:default"><div class="nm">' + esc(i.name) +
       (i.cooking ? ' <span class="muted">· ' + esc(i.cooking) + '</span>' : '') + '</div>' +
       '<div class="kc" style="max-width:56%">' + i.grams + (i.u === "ml" ? "ml" : "g") + ' · ' +
       Math.round(i.kcal) + ' kcal' + (i.lib ? ' <span style="color:var(--brand)">库</span>' : '') + '</div></div>').join("");
-    box.innerHTML = alertHtml("ok", "✅", "拆出 <b>" + r.items.length + "</b> 项，其中 <b>" + libHit +
-      "</b> 项命中食物库。" + (r.note ? "<br><span class='xs muted'>" + esc(r.note) + "</span>" : "")) +
-      '<div class="search-list" style="max-height:200px">' + rows + '</div>';
+    box.innerHTML = alertHtml("ok", "✅", "已加入" + MEALS[type].label + " <b>" + r.items.length + "</b> 项，其中 <b>" +
+      libHit + "</b> 项命中食物库。" + (r.note ? "<br><span class='xs muted'>" + esc(r.note) + "</span>" : "")) +
+      '<div class="search-list" style="max-height:200px">' + rows + '</div>' +
+      '<div class="btn-row" style="margin-top:9px"><button class="btn sm" data-checkmeal="' + type + '">去核对克数</button></div>';
     $("#quickText").value = "";
-    toast("已加入 " + r.items.length + " 项", "ok");
+    saveLocal(); renderAll();
+    toast("已加入 " + r.items.length + " 项到" + MEALS[type].label, "ok");
   } catch(e){
     box.innerHTML = alertHtml("bad", "⚠️", "AI 拆解失败：" + esc(e.message));
   }
@@ -4600,10 +4620,20 @@ function scheduleRetry(){
 }
 /* 并发调用时复用在跑的那一次。
    以前是「已有同步就返回 busy」，于是用户点「立即同步」看起来毫无反应。 */
+/* 同步互斥锁：拉取与推送共用同一把锁。
+   之前两者各跑各的，会出现「推送拿到旧 sha → 别的拉取换了云端 → 推送 PUT 撞 409」的交叉。
+   现在任何同步动作都必须先拿到这把锁，409 只可能来自真正的远端变更（手机 vs 电脑），
+   而不是自己和自己撞车。 */
+let _syncGate = Promise.resolve();
+function withSyncLock(fn){
+  const run = _syncGate.then(fn, fn);
+  _syncGate = run.catch(() => {});
+  return run;
+}
 let _syncInflight = null;
 async function syncNow(silent){
   if (_syncInflight) return await _syncInflight;
-  _syncInflight = syncNowInner(silent);
+  _syncInflight = withSyncLock(() => syncNowInner(silent));
   try { return await _syncInflight; }
   finally { _syncInflight = null; }
 }
@@ -4645,24 +4675,27 @@ async function pushPayload(cfg, quiet){
 /** 自动同步：静默推送，失败不打扰但要留痕 */
 async function syncPushSilent(retry){
   if (!syncReady()) return;
-  if (_syncInflight){ try { await _syncInflight; } catch(e){} }   // 等在跑的同步结束，别把这次推送吞掉
-  if (SY.busy) return;
-  SY.busy = true; renderSyncBar();
-  const cfg = syncCfg();
-  let res = await pushPayload(cfg, true);
-  if (res.conflict && !retry){                     // 云端被别的设备改过 → 先合并再推一轮
-    SY.busy = false;
-    await syncNow(true);
-    return;
-  }
-  SY.busy = false;
-  syncStat(!!res.ok, res.ok ? "" : res.why, "push");
-  if (res.ok) SY.cloudDays = Object.keys(S.days).length;
-  saveSyncStat();
-  const out = $("#syncOut");
-  if (out && res.ok) out.innerHTML = alertHtml("ok", "✅",
-    res.unchanged ? "内容没变，无需推送。" :
-    ("已推送 " + Object.keys(S.days).length + " 天数据到 " + cfg.owner + "/" + cfg.repo));
+  return withSyncLock(async () => {
+    if (SY.busy) return;
+    SY.busy = true; renderSyncBar();
+    const cfg = syncCfg();
+    // 冲突重试：合并远端 → 再推，最多 3 轮。
+    // 之前撞 409 之后只做了合并、忘了重推，等于「这次数据只在本地」。
+    for (let attempt = 0; attempt < 3; attempt++){
+      const res = await pushPayload(cfg, true);
+      if (res.ok){ SY.busy = false; syncStat(true, "", "push");
+        if (res.ok) SY.cloudDays = Object.keys(S.days).length;
+        saveSyncStat(); renderSyncBar();
+        return { ok:true }; }
+      if (!res.conflict) break;
+      // 真冲突：拉远端合并进来，下一轮再推
+      SY.busy = false;
+      await syncNowInner(true);
+      SY.busy = true;
+    }
+    SY.busy = false; renderSyncBar();
+    syncStat(false, "conflict", "push");
+  });
 }
 function scheduleSync(){
   if (!syncReady()) return;
@@ -5011,6 +5044,21 @@ function wireEvents(){
     }
 
     // 快速记录
+    if ((el = hit("[data-checkmeal]"))){
+      const type = el.dataset.checkmeal;
+      const d = S.days[S.date || today()];
+      const meal = d && (d.meals || []).find(m => m.type === type);
+      if (!meal || !(meal.items || []).length){ toast("这一餐还没有食物", "err"); return; }
+      S.pendingMeal = { date:(S.date || today()), type };
+      S.mealDraft = { type, at:meal.at || "", photo:null,
+                      items:(meal.items || []).map(i => {
+                        const f = FOOD_IX[i.lib || i.name];
+                        return f ? itemFromFood(f, i.grams) : Object.assign({}, i);
+                      }).filter(Boolean) };
+      S.mealMsg = "";
+      openSheet("sheetMeal"); renderMealSheet();
+      toast("改完克数记得保存", "ok"); return;
+    }
     if ((el = hit("[data-openquick]"))){ openQuick(); return; }
     if ((el = hit("[data-quick]"))){
       const k = el.dataset.quick;
