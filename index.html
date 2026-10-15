@@ -1125,7 +1125,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v7.2";
+const APP_VER = "v7.3";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -2670,7 +2670,14 @@ function renderToday(){
   // 而是把用户推进「记录回路」—— 回路里的即时反馈才是首日价值。
   // 21 天的自适应结论是留存价值，放数据页做渐进解锁，不上首页。
   const anyMeal = !!((d && d.meals) || []).some(m => (m.items || []).length);
-  if (isT && !anyMeal){
+  // 启动时先渲染、后拉云端（1~3s）。这个空档里「今天确实没记」会误判成
+  // 「我的数据丢了」—— 同步没完成前绝不能把引导卡当主角。
+  const bootPending = syncReady() && !SY.lastPull && !SY.lastErr;
+  if (isT && !anyMeal && bootPending){
+    h += '<div class="card"><div class="card-h"><h2>☁️ 正在从云端同步…</h2></div>' +
+      '<div class="small muted" style="line-height:1.8">数据马上就绪，不用重新记录。</div></div>';
+  }
+  if (isT && !anyMeal && !bootPending){
     const hh = new Date().getHours();
     const meal = hh < 10 ? "breakfast" : hh < 15 ? "lunch" : hh < 21 ? "dinner" : "snack";
     h += '<div class="card"><div class="card-h"><h2>' +
