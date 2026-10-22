@@ -360,6 +360,17 @@ details.card.fold[open]>summary:hover{background:transparent}
 /* 蛋白缺口的一句反馈 */
 .chip-feed{margin-bottom:9px;padding:9px 11px;border-radius:10px;font-size:12px;line-height:1.7;
   background:var(--brand-soft);color:var(--brand);font-weight:650}
+/* 减脂质量分解条 */
+.qsplit{margin:2px 0}
+.qs-bar{display:flex;height:8px;border-radius:4px;overflow:hidden;background:var(--surface-3)}
+.qs-fat{background:var(--brand)}
+.qs-lbm{background:var(--danger)}
+.qs-legend{display:flex;gap:10px;font-size:10.5px;font-weight:700;margin-top:4px}
+/* 本周报告 */
+.digest{font-size:12.5px;line-height:2}
+.digest b{font-variant-numeric:tabular-nums}
+.dg-verdict{margin-top:7px;padding:9px 11px;border-radius:10px;background:var(--surface-2);
+  border-left:3px solid var(--brand);font-size:12.5px;line-height:1.7;font-weight:600}
 .exnote{margin-top:10px;padding:9px 11px;border-radius:10px;font-size:11.5px;line-height:1.7;
   background:var(--brand-soft);color:var(--brand);font-weight:600}
 .brow{display:flex;align-items:center;gap:7px;padding:6px 0;border-bottom:1px solid var(--border)}
@@ -513,7 +524,7 @@ pre.diag{background:var(--surface-2);border:1px solid var(--border);border-radiu
 <nav class="nav">
   <div class="nav-in">
     <button data-v="today" class="on"><span class="ni">🍽️</span>今日</button>
-    <button data-v="data"><span class="ni">📊</span>数据</button>
+    <button data-v="data"><span class="ni">📊</span>监测</button>
     <button data-v="meals"><span class="ni">🍱</span>餐食</button>
     <button data-v="settings"><span class="ni">⚙️</span>设置</button>
   </div>
@@ -1125,7 +1136,7 @@ const MEALS = {
 const KCAL_PER_KG = 7700;   // 脂肪组织能量密度
 /* 版本号：每次发版手动改这两行。桌面版 App 是网络优先加载的，
    所以这里显示的就是你实际在跑的版本；改了没变说明还是旧缓存。 */
-const APP_VER = "v7.3";
+const APP_VER = "v8.0";
 const APP_BUILD = "2026-10-10";
 const MAGIC = { tdeeWin:21, minDays:7, minKcal:600, ema:0.3 };
 
@@ -2646,6 +2657,102 @@ function exerciseCard(date){
   return h;
 }
 
+/* ---------- 战略转向 v8.0：主角从「热量」换成「身体状态」 ----------
+   主指标：这周掉的秤里脂肪和肌肉各占多少（有体成分记录用实测，否则诚实估算）。 */
+
+/** 近 N 天有没有记过运动 */
+function recentExercise(days){
+  for (let i = 0; i < days; i++)
+    { const dd = S.days[addDays(today(), -i)]; if (dd && dd.exercise) return true; }
+  return false;
+}
+/** 把 N 天的体重变化分解为脂肪 / 去脂体重。
+    有两条体成分记录夹住窗口 → 实测；否则按「缺口比例 + 蛋白水平 + 有无训练」估算，
+    并明确标 measured:false —— 分析可以粗，但绝不假装精确。 */
+function fatLossQuality(days){
+  const t = effectiveTDEE(), tg = computeTargets(today());
+  const ds = bcDeltas();
+  const last = ds.length ? ds[ds.length - 1] : null;
+  if (last && last.dW != null && last.dFat != null && last.dLbm != null){
+    const span = Math.max(1, daysBetween(last.from, last.to));
+    const k = days / span;
+    return { dw:last.dW * k, fat:last.dFat * k, lbm:last.dLbm * k, measured:true };
+  }
+  const m21 = estimateTDEE();
+  if (!m21 || m21.nW < 5) return null;
+  const dw = m21.slope * days;
+  const ratio = tg.deficit / Math.max(1, t.value);
+  let ff = 0.10 + ratio * 0.6;                       // 缺口越深，肌肉流失占比越高
+  if (S.settings.proteinPerKg >= 2) ff -= 0.05;      // 高蛋白保肌肉
+  if (recentExercise(days)) ff -= 0.05;              // 抗阻训练保肌肉
+  ff = clamp(ff, 0.12, 0.45);
+  return { dw, fat: dw * (1 - ff), lbm: dw * ff, measured:false, ff };
+}
+/** 今日页主角卡：身体状态（体重 + 减脂质量 + 代谢 + 今日摄入） */
+function statusHero(date, tg, m, t){
+  const d = S.days[date] || {};
+  const mw = d.morning && d.morning.kg != null ? d.morning.kg : null;
+  const q = fatLossQuality(7);
+  const deficitNow = Math.round(t.value - m.kcal);
+  let h = '<div class="card"><div class="hero">' + kcalRing(m.kcal, tg.kcal) +
+    '<div class="hero-stats">' +
+      '<div class="kv"><span class="k">晨重</span><span class="v">' + (mw != null ? fw(mw) : "—") +
+        '<small>kg</small></span><span class="xs muted">趋势 ' + fw(currentTrendWeight()) + 'kg' +
+        (q && q.dw != null ? ' · 本周 ' + (q.dw > 0 ? "+" : "") + q.dw.toFixed(2) + 'kg' : '') + '</span></div>';
+  if (q && q.dw != null && q.dw < 0){
+    const fat = Math.abs(q.fat), lbm = Math.abs(q.lbm);
+    const tot = Math.max(0.001, fat + lbm);
+    h += '<div class="qsplit"><div class="qs-bar">' +
+      '<div class="qs-fat" style="width:' + (fat / tot * 100).toFixed(0) + '%"></div>' +
+      '<div class="qs-lbm" style="width:' + (lbm / tot * 100).toFixed(0) + '%"></div></div>' +
+      '<div class="qs-legend"><span style="color:var(--brand)">脂肪 −' + fat.toFixed(2) + 'kg</span>' +
+      '<span style="color:var(--danger)">肌肉 −' + lbm.toFixed(2) + 'kg</span>' +
+      '<span class="muted">' + (q.measured ? "实测体成分" : "估算") + '</span></div></div>';
+  }
+  h += '<div class="kv"><span class="k">代谢</span><span class="v">' + t.value +
+      '<small>kcal TDEE</small></span><span class="xs ' + (t.source === "measured" ? "ok" : "muted") + '">' +
+      (t.source === "measured" ? "实测 · 可信" : "公式推算") + ' · 缺口 ' + tg.deficit +
+      (tg.exerciseBonus ? ' + 练后 ' + tg.exerciseBonus : '') + '</span></div>' +
+      '<div class="kv"><span class="k">今日</span><span class="v" style="color:' +
+      (deficitNow >= 0 ? "var(--brand)" : "var(--danger)") + '">' + (deficitNow >= 0 ? "−" : "+") + Math.abs(deficitNow) +
+      '<small>kcal 缺口</small></span><span class="xs muted">已摄 ' + Math.round(m.kcal) + ' / ' + tg.kcal + '</span></div>' +
+    '</div></div>';
+  return h;
+}
+/** 本周报告：教练口吻 —— 数据 → 判断 → 下周一个动作 */
+function weeklyDigestCard(){
+  const t = effectiveTDEE(), tg = computeTargets(today());
+  const q = fatLossQuality(7);
+  let logged = 0, sumIn = 0;
+  for (let i = 0; i < 7; i++){
+    const dd = S.days[addDays(today(), -i)], kc = dayKcal(dd);
+    if (kc >= MAGIC.minKcal){ logged++; sumIn += kc; }
+  }
+  const avg = logged ? Math.round(sumIn / logged) : null;
+  const lines = [];
+  if (q && q.dw != null){
+    const fat = q.fat, lbm = q.lbm;
+    lines.push('本周体重 <b>' + (q.dw > 0 ? "+" : "") + q.dw.toFixed(2) + 'kg</b>　→　脂肪 ' +
+      (fat > 0 ? "+" : "−") + Math.abs(fat).toFixed(2) + ' · 肌肉 ' + (lbm > 0 ? "+" : "−") + Math.abs(lbm).toFixed(2) +
+      '（' + (q.measured ? "体成分实测" : "按缺口估算") + '）');
+  } else {
+    lines.push('体重趋势数据不足 —— 连续记晨重，约一周后这里才有判断力。');
+  }
+  if (avg != null) lines.push('平均摄入 <b>' + avg + '</b> / 目标 ' + tg.kcal + ' kcal　·　有记录 ' + logged + '/7 天');
+  // 判断：一句话 + 下周一个动作
+  let verdict = "";
+  if (!q || q.dw == null) verdict = '<span class="muted">先攒数据，不急着下结论。</span>';
+  else if (q.dw > 0.05) verdict = '体重在涨但先别慌 —— 连续 3 天以上才算趋势，单日多为水分/钠/生理期。维持节奏，别补偿性少吃。';
+  else if (!q.measured && q.ff > 0.38 || q.measured && q.dw < 0 && Math.abs(q.lbm) > 0.25 * Math.abs(q.dw))
+    verdict = '⚠️ 肌肉流失占比偏高 —— 下周把蛋白提到 2.2g/kg，或把速率从 ' + S.settings.ratePerWeek + ' 降到 0.3kg/周。';
+  else if (q.dw < -S.settings.ratePerWeek * 1.6) verdict = '掉得偏快 —— 缺口过大是掉肌肉的第一推手。下周速率回调一档。';
+  else verdict = '✅ 节奏健康：脂肪为主、缺口适中。保持，不调整。';
+  return '<div class="card"><div class="card-h"><h2>📋 本周报告</h2><span class="hint">' +
+    (t.source === "measured" ? "实测代谢" : "公式代谢") + '</span></div>' +
+    '<div class="digest">' + lines.map(x => '<div>' + x + '</div>').join("") +
+    '<div class="dg-verdict">' + verdict + '</div></div></div>';
+}
+
 function renderToday(){
   const date = S.date, d = S.days[date];
   const tg = computeTargets(date), m = dayMacros(d), t = effectiveTDEE();
@@ -2692,17 +2799,7 @@ function renderToday(){
         '<button class="chip" data-v="meals">🍱 常吃组合</button></div>' +
       '</div>';
   }
-  h += '<div class="card"><div class="hero">' + kcalRing(m.kcal, tg.kcal) +
-    '<div class="hero-stats">' +
-      '<div class="kv"><span class="k">目标摄入</span><span class="v">' + tg.kcal + '<small>kcal</small></span>' +
-        (tg.exerciseBonus ? '<span class="xs" style="color:var(--brand);font-weight:650">基础 ' + tg.baseKcal +
-          ' + 练后 ' + tg.exerciseBonus + '</span>' : '') + '</div>' +
-      '<div class="kv"><span class="k">今日缺口</span><span class="v" style="color:' + (deficitNow >= 0 ? "var(--brand)" : "var(--danger)") + '">' +
-        (deficitNow >= 0 ? "" : "+") + (-deficitNow) + '<small>kcal</small></span></div>' +
-      '<div class="kv"><span class="k">' + (t.source === "measured" ? "实测 TDEE" : t.source === "manual" ? "手填 TDEE" : "公式 TDEE") + '</span>' +
-        '<span class="v">' + t.value + '<small>kcal</small></span></div>' +
-      '<div class="kv"><span class="k">趋势体重</span><span class="v">' + fw(currentTrendWeight()) + '<small>kg</small></span></div>' +
-    '</div></div>';
+  h += statusHero(date, tg, m, t);
   // 训练日把「为什么今天能多吃」写清楚：只说后果，不摊公式
   if (tg.exerciseBonus && d && d.exercise){
     h += '<div class="alert info" style="margin:13px 0 0"><span class="ai">🏋️</span><div>' +
@@ -2739,6 +2836,7 @@ function renderToday(){
     '</div>';
 
   h += weightPanel(date);
+  h += weeklyDigestCard();
   h += exerciseCard(date);
   h += '<div class="card"><div class="card-h"><h2>🍽️ 今日三餐</h2><span class="hint">点 ＋ 拍照或手动添加</span></div>';
   for (const type of ["breakfast", "lunch", "dinner", "snack"]) h += mealSection(date, type);
